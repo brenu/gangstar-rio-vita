@@ -1,0 +1,1 @@
+int sceKernelChangeThreadPriority(int,int);
