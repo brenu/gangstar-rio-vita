@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Read-only inventory of original Rio OBB directories and DDS mip layouts."""
+import argparse
+import csv
+import json
+import re
+import struct
+from collections import Counter
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+WORLD = re.compile(r'^(?:copacabana_|southfavela_|northfavela_|rich_\d+_|middleclass_\d+_|downtown_\d+_|'
+                   r'mountain_|ground_|cliff(?:[._2]|texture)|tree_generic|airport_|cidadededeus_|cityofgod_|'
+                   r'ilhadascobras_|industrial_|interior_|mine_|safehouse_|sugarloaf_|gs3_corcovado_|'
+                   r'concreate|rocksand_|runway_|sand(?:[._-]))')
+
+def entries(path):
+    with path.open('rb') as stream:
+        header = stream.read(16)
+        if len(header) != 16:
+            raise ValueError(f'{path.name}: truncated header')
+        _, data_offset, names_offset, count = struct.unpack('>4I', header)
+        length = path.stat().st_size
+        if count > 100000 or names_offset != 16 + 16 * count or not names_offset <= data_offset <= length:
+            raise ValueError(f'{path.name}: unsupported directory')
+        table = stream.read(count * 16)
+        names = stream.read(data_offset - names_offset)
+        for index in range(count):
+            offset, size, name_offset, flags = struct.unpack_from('>4I', table, index * 16)
+            end = names.find(b'\0', name_offset)
+            if name_offset >= len(names) or end < 0 or offset > length or size > length - offset:
+                raise ValueError(f'{path.name}: invalid entry {index}')
+            yield dict(archive=path.name, name=names[name_offset:end].decode('utf-8'),
+                       offset=offset, bytes=size, flags=flags)
+
+def describe(header, size):
+    if len(header) < 128 or header[:4] != b'DDS ':
+        return dict(format='other', width=0, height=0, mips=0, strict_mips=False, bytes_512=0)
+    get = lambda offset: struct.unpack_from('<I', header, offset)[0]
+    width, height, levels = get(16), get(12), get(28)
+    expected = bytearray(128)
+    for offset, value in {0:0x20534444, 4:124, 8:0x21007, 12:height, 16:width,
+                          28:levels, 76:32, 80:4, 84:0x30435445, 108:0x401008}.items():
+        struct.pack_into('<I', expected, offset, value)
+    supported_shape = (width == height and width in (1024,2048)) or (width,height) in ((512,1024),(1024,512))
+    supported = supported_shape and levels == (12 if max(width,height)==2048 else 11)
+    total, keep, w, h = 128, 128, width, height
+    if supported:
+        for _ in range(levels):
+            payload = ((w+3)//4)*((h+3)//4)*8
+            total += payload
+            if max(w,h) <= 512:
+                keep += payload
+            w,h = max(1,w//2),max(1,h//2)
+    strict = supported and header == expected and size == total
+    return dict(format=header[84:88].decode('ascii', errors='replace'), width=width,
+                height=height, mips=levels, strict_mips=bool(strict), bytes_512=keep if strict else 0)
+
+def inventory(folder):
+    rows, totals = [], Counter()
+    for path in sorted(folder.glob('*.obb')):
+        with path.open('rb') as stream:
+            for entry in entries(path):
+                totals['entries'] += 1
+                totals['bytes'] += entry['bytes']
+                extension = Path(entry['name']).suffix.lower()
+                if extension not in ('.tga', '.dds', '.pvr', '.bmp'):
+                    continue
+                stream.seek(entry['offset'])
+                row = {**entry, **describe(stream.read(min(entry['bytes'], 128)), entry['bytes'])}
+                base = Path(entry['name']).name.lower()
+                canonical = entry['name'].lower().startswith('_packetc/') and entry['name'].count('/') == 1
+                row['category'] = ('world_candidate' if canonical and WORLD.match(base) else 'review_other')
+                row['eligible_candidate'] = bool(row['strict_mips'] and not row['flags'] and row['category'] == 'world_candidate')
+                rows.append(row)
+    return rows, dict(totals)
+
+def write_manifest(rows, path):
+    names = sorted({Path(r['name']).name.lower() for r in rows if r['eligible_candidate']})
+    sizes = {Path(r['name']).name.lower(): r['bytes_512'] for r in rows if r['eligible_candidate']}
+    groups = {}
+    edges = {}
+    for name in names:
+        match = re.fullmatch(r'(.*_lightmap0)([0-3])\.tga', name)
+        if match:
+            groups[match[1]] = groups.get(match[1], 0) | (1 << int(match[2]))
+            row = next(r for r in rows if Path(r['name']).name.lower() == name and r['eligible_candidate'])
+            edge = row['width']
+            if edges.setdefault(match[1], edge) != edge:
+                raise ValueError('Mixed lightmap source dimensions: ' + match[1])
+    order = ['copacabana_lightmap0', 'southfavela_lightmap0']
+    order += sorted(set(groups) - set(order))
+    text = ['// Generated by tools/inventory_textures.py from original OBB metadata.',
+            '// Names and source dimensions only; every source DDS is validated again at runtime.',
+            '#ifndef GANGSTAR_WORLD_TEXTURE_MANIFEST_H', '#define GANGSTAR_WORLD_TEXTURE_MANIFEST_H',
+            'static const char *const rio_world_texture_names[] = {']
+    text += ['    ' + json.dumps(name) + ',' for name in names]
+    text += ['};', 'static const unsigned rio_world_texture_bytes[] = {' + ','.join(str(sizes[name]) for name in names) + '};', 'static const struct { const char *prefix; unsigned members, source_edge; } rio_world_lightmaps[] = {']
+    text += ['    {' + json.dumps(prefix) + ', ' + str(groups[prefix]) + ', ' + str(edges[prefix]) + '},' for prefix in order]
+    text += ['};', '#define RIO_WORLD_LIGHTMAP_FAMILIES (sizeof(rio_world_lightmaps)/sizeof(*rio_world_lightmaps))', '#endif', '']
+    path.write_text('\n'.join(text))
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--inputs', type=Path, default=ROOT.parent/'com.gameloft.android.ANMP.GloftG4HM')
+    parser.add_argument('--output', type=Path, default=ROOT/'work'/'texture-inventory')
+    parser.add_argument('--manifest', type=Path, help='Generate the reviewed world-filename C manifest')
+    args = parser.parse_args()
+    rows, totals = inventory(args.inputs)
+    if not totals:
+        raise SystemExit('No original OBBs found')
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    summary = {**totals, 'textures': len(rows), 'strict_large_dds': sum(r['strict_mips'] for r in rows),
+               'world_candidates': sum(r['eligible_candidate'] for r in rows)}
+    summary['candidate_source_bytes'] = sum(r['bytes'] for r in rows if r['eligible_candidate'])
+    summary['candidate_512_bytes'] = sum(r['bytes_512'] for r in rows if r['eligible_candidate'])
+    args.output.with_suffix('.json').write_text(json.dumps({'summary':summary,'textures':rows},indent=2)+'\n')
+    with args.output.with_suffix('.csv').open('w',newline='') as stream:
+        writer=csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+    if args.manifest:
+        write_manifest(rows,args.manifest)
+    print(json.dumps(summary,indent=2))
+    print('Dimension counts:',dict(Counter((r['width'],r['height']) for r in rows)))
+
+if __name__ == '__main__':
+    main()

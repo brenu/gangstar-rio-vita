@@ -1,0 +1,66 @@
+# Private game inputs, extracted libraries and assets
+*.apk
+*.aab
+*.obb
+*.so
+*.so.*
+/game-data/
+/private/
+/data/
+
+# Everything generated or collected locally
+/work/
+/build/
+/staging/
+/dist/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.vpk
+*.self
+*.velf
+*.elf
+*.o
+*.obj
+*.a
+*.map
+*.log
+*.core
+core
+core.*
+*.dmp
+*.psp2dmp
+*.upload
+*.previous-*
+*.tmp
+*.bak
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+.claude/
+.codex/
+.agents/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/
+
+# Upstream sample media (not needed to build the port)
+lib/vitagl/samples/video_playback/video.mp4
+
+# SDK-provided kubridge header/stubs and unused upstream demo assets
+/lib/kubridge/
+/lib/vitagl/samples/
