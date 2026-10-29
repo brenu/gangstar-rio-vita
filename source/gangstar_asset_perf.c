@@ -6,6 +6,12 @@
 static atomic_int frame_thread;
 static GangstarAssetPerf stats;
 static unsigned frame_number=(unsigned)-1;
+void gangstar_upload_layout_error(int level,unsigned base_w,unsigned base_h,unsigned w,unsigned h) {
+    static atomic_uint reported;
+    if (atomic_fetch_add(&reported,1) < 16)
+        l_error("RIO_UPLOAD_LAYOUT_REJECT frame=%u level=%d base=%ux%u incoming=%ux%u",
+            frame_number,level,base_w,base_h,w,h);
+}
 static struct { unsigned frame,level,width,height,pool; size_t available,required,reserved,pool_free; } upload_failures[64];
 static unsigned upload_failure_count, upload_failure_dropped;
 static unsigned alpha_discard_calls;

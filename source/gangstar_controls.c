@@ -21,7 +21,9 @@ static int accelerating, braking;
 static uint32_t buttons;
 static int (*game_loaded)(void), (*in_game)(void);
 static void *(*hud_instance)(void), *(*event_instance)(void);
-static int (*hud_visible)(void *), (*hud_locked)(void *);
+static int (*hud_visible)(void *), (*hud_locked)(void *), (*hud_flying)(void *);
+static void *(*script_instance)(void);
+static int (*in_cinematic)(void *), (*controls_locked)(void *);
 static int (*near_shop)(void *), (*near_item)(void *);
 static unsigned triangle_action=2;
 static void (*raise_event)(void *, const void *);
@@ -79,7 +81,7 @@ static void send_button(void *unused, unsigned button, unsigned state) {
             triangle_action=rio_triangle_action(last_mode,hud && near_shop(hud),hud && near_item(hud));
             l_info("Gangstar context action: %s",triangle_action==4?"shop":triangle_action==3?"item":"vehicle");
         }
-        button=last_mode==2?2:triangle_action;
+        button=last_mode>=2?2:triangle_action;
     }
     struct { uint32_t vtable,type,state,button,context,callback; } event={
         virtual_vtable,13,state,button,0,0};
@@ -93,9 +95,8 @@ int gangstar_controls_filter_key(int key, ControlsAction action) {
         key==AKEYCODE_BUTTON_Y || key==AKEYCODE_BUTTON_L1 || key==AKEYCODE_BUTTON_R1 ||
         key==AKEYCODE_BUTTON_SELECT;
     unsigned mask=1u<<(key&31);uint32_t *word=&consumed_keys[key>>5];
-    if(!mapped || (!last_mode && !(*word&mask)))return 0;
-    if(action==CONTROLS_ACTION_DOWN)*word|=mask;else *word&=~mask;
-    return 1;
+    if(!mapped)return 0;
+    return rio_key_consume(word,mask,last_mode!=0,action==CONTROLS_ACTION_DOWN);
 }
 static unsigned action_buttons(void) {
     static const struct {unsigned vita,logical;} map[]={
@@ -113,7 +114,19 @@ static void ignore_driving_tilt(void *handler, const void *event) {
     (void)handler; (void)event;
     // DrivingControlHandler also receives cached accelerometer events during
     // the engine step. They must not overwrite the stick's steering command.
-    // Aircraft/jetpack and all other accelerometer handlers remain original.
+    // The aircraft handler is also disabled below; jetpack remains original.
+}
+
+static void aircraft_stick(void *handler,const StickEvent *event) {
+    // Verified FlyingControlHandler::handleAcceleration writes target +0x90
+    // and +0x94. Player Helicopter::UpdatePhysic converts these axes into rotor
+    // angle/strength every tick, overriding the stock handleStickMove result.
+    // Feed that same physics path directly, without motion sensor input.
+    unsigned char *target=*(unsigned char **)((char *)handler+4);
+    if(!target)return;
+    float x,y;
+    gangstar_aircraft_axes(event->angle,event->strength,&x,&y);
+    memcpy(target+0x90,&x,sizeof(x));memcpy(target+0x94,&y,sizeof(y));
 }
 
 void gangstar_controls_init(void) {
@@ -122,6 +135,10 @@ void gangstar_controls_init(void) {
     hud_instance = (void *)required("_ZN11CHudManager11getInstanceEv");
     hud_visible = (void *)required("_ZNK11CHudManager9isVisibleEv");
     hud_locked = (void *)required("_ZNK11CHudManager8isLockedEv");
+    hud_flying = (void *)required("_ZNK11CHudManager10isInFlyHudEv");
+    script_instance = (void *)required("_ZN13ScriptManager11getInstanceEv");
+    in_cinematic = (void *)required("_ZNK13ScriptManager13isInCinematicEv");
+    controls_locked = (void *)required("_ZNK15CControlManager8isLockedEv");
     near_shop = (void *)required("_ZNK11CHudManager10isNearShopEv");
     near_item = (void *)required("_ZNK11CHudManager10isNearItemEv");
     event_instance = (void *)required("_ZN12EventManager11getInstanceEv");
@@ -138,7 +155,17 @@ void gangstar_controls_init(void) {
     if (memcmp((void *)tilt, expected, sizeof(expected)))
         fatal_error("Gangstar controls: unsupported driving tilt handler");
     hook_addr(tilt, (uintptr_t)ignore_driving_tilt);
-    l_info("Gangstar controls: left stick walk/steer, right stick camera, native action buttons, R accelerate/L brake while driving; car tilt disabled");
+    uintptr_t flying_tilt=required("_ZN20FlyingControlHandler18handleAccelerationEPK14EvAcceleration");
+    static const uint32_t flying_expected[]={0xe92d4070,0xed2d8b04};
+    if(memcmp((void *)flying_tilt,flying_expected,sizeof(flying_expected)))
+        fatal_error("Gangstar controls: unsupported aircraft tilt handler");
+    hook_addr(flying_tilt,(uintptr_t)ignore_driving_tilt);
+    uintptr_t flying_stick=required("_ZN20FlyingControlHandler15handleStickMoveEPK11EvStickMove");
+    static const uint32_t stick_expected[]={0xe59f3054,0xe92d4010};
+    if(memcmp((void *)flying_stick,stick_expected,sizeof(stick_expected)))
+        fatal_error("Gangstar controls: unsupported aircraft stick handler");
+    hook_addr(flying_stick,(uintptr_t)aircraft_stick);
+    l_info("Gangstar controls: left stick walk/steer, right stick camera, native action buttons, R accelerate/L brake while driving; car/aircraft tilt disabled; left stick aircraft pitch/roll");
 }
 
 void gangstar_controls_stick(ControlsStickId which, float x, float y) {
@@ -156,37 +183,53 @@ void gangstar_controls_poll(void) {
     if (game_loaded() && in_game()) {
         hud = hud_instance();
         // CHudManager::walking/driving select state pointers at +8/+12.
-        if (hud && *(void **)(hud + 4) && hud_visible(hud) && !hud_locked(hud))
-            mode = *(void **)(hud + 4) == *(void **)(hud + 12) ? 2 : 1;
+        // OnFootControlHandler::onEvent independently checks the control
+        // manager at Application+0x17af4 and ScriptManager::isInCinematic.
+        // HUD visibility alone can become true before either gate clears.
+        void *controls=*application ? *(void **)((char *)*application+0x17af4) : NULL;
+        void *script=script_instance();
+        if (hud && *(void **)(hud + 4) && hud_visible(hud) && !hud_locked(hud) &&
+            controls && !controls_locked(controls) && script && !in_cinematic(script))
+            mode = hud_flying(hud) ? 3 : *(void **)(hud + 4) == *(void **)(hud + 12) ? 2 : 1;
     }
     if (mode != last_mode) {
         // Repeat neutral after becoming active: a release sent while the
         // original control manager was locked may have been ignored.
-        if (walking || mode) send_walk(0, 0, 1);
+        // FlyingControlHandler ignores EvStickReleased (8). A zero-strength
+        // EvStickMove (7) clears the retained rotor/airplane stick command.
+        if (last_mode==3 || mode==3) send_walk(0,0,0);
+        else if (walking || mode) send_walk(0, 0, 1);
         if (steering || mode) send_steering(0);
-        if (accelerating || mode == 2) send_pedal(1, 0);
-        if (braking || mode == 2) send_pedal(0, 0);
+        if (accelerating || mode >= 2) send_pedal(1, 0);
+        if (braking || mode >= 2) send_pedal(0, 0);
         accelerating = braking = 0;
         walking = steering = 0;
         camera_remainder[0] = camera_remainder[1] = 0;
         if (RIO_RIGHT_STICK_CAMERA && (camera_active || mode) && game_loaded() && *application)
             move_camera(*application, 0, 0);
         camera_active = 0;
-        l_info("Gangstar analog input: %s", mode == 2 ? "driving" : mode == 1 ? "on foot/other HUD" : "inactive");
+        l_info("Gangstar analog input: %s", mode == 3 ? "flying" : mode == 2 ? "driving" : mode == 1 ? "on foot/other HUD" : "inactive");
         last_mode = mode;
     }
-    rio_pad_actions(&actions,mode,action_buttons(),send_button,NULL);
+    rio_pad_actions(&actions,mode==3?2:mode,action_buttons(),send_button,NULL);
     if (!mode) return;
     float x = sticks[0][0], y = sticks[0][1];
-    if (mode == 2) {
+    if (mode >= 2) {
         int gas = gangstar_pedal_update(1, (buttons & SCE_CTRL_R1) != 0, &accelerating);
         int brake = gangstar_pedal_update(1, (buttons & SCE_CTRL_L1) != 0, &braking);
         if (gas >= 0) send_pedal(1, gas);
         if (brake >= 0) send_pedal(0, brake);
         // A zero-strength move explicitly centers the wheels. The original
         // driving handler ignores EvLeftRightStickReleased (event 10).
-        send_steering(x);
-        steering = 1;
+        if(mode==3) {
+            // The aircraft adapter feeds native physics axes. Send every
+            // frame, including centered input.
+            send_walk(x,y,0);
+            walking=1;
+        } else {
+            send_steering(x);
+            steering=1;
+        }
     } else if (x != 0 || y != 0) {
         send_walk(x, y, 0);
         walking = 1;

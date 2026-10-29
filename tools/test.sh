@@ -30,6 +30,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gang
 work/tests/gangstar_alpha_overwrite
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_etc_reserve.c -o work/tests/gangstar_etc_reserve
 work/tests/gangstar_etc_reserve
+cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_retire_queue.c -o work/tests/gangstar_retire_queue
+work/tests/gangstar_retire_queue
+cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_compressed_mips.c -o work/tests/gangstar_compressed_mips
+work/tests/gangstar_compressed_mips
 cc -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -DDEBUG_SOLOADER -DGANGSTAR_ASYNC_LOG '-DDATA_PATH="test/"' -Wall -Wextra -Werror -I tools/logger_mocks -I source -pthread source/utils/logger.c tools/test_gangstar_logger.c -o work/tests/gangstar_logger
 work/tests/gangstar_logger
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_path_index.c -o work/tests/gangstar_path_index
@@ -102,3 +106,30 @@ work/tests/gangstar_archive_io_64m
 
 cc -std=c11 -O2 -D_GNU_SOURCE -D_XOPEN_SOURCE=700 -DRIO_CACHE_MIB=64 -DRIO_CACHE_BLOCK_KIB=32 -DRIO_TEST_FAIL_LARGE -DGANGSTAR_ARCHIVE_VIRTUAL_CURSOR -Wall -Wextra -Werror -I tools/test_mocks -I source -pthread source/gangstar_archive_cache.c source/gangstar_archive_io.c tools/test_gangstar_archive_io.c -Wl,--wrap=lseek -o work/tests/gangstar_archive_io_fallback
 work/tests/gangstar_archive_io_fallback
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -I tools/test_mocks source/gangstar_heap_wrap.c tools/test_gangstar_heap_wrap.c -o work/tests/gangstar_heap_wrap
+work/tests/gangstar_heap_wrap
+
+python3 tools/test_heap_ledger.py
+
+cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_jni_classes.c -o work/tests/gangstar_jni_classes
+work/tests/gangstar_jni_classes
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_stream_guard.c -o work/tests/gangstar_stream_guard
+work/tests/gangstar_stream_guard
+
+cc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -I tools/test_mocks -I source -pthread source/gangstar_archive_cache.c source/gangstar_archive_io.c tools/test_gangstar_shared_archive.c -Wl,--wrap=open -o work/tests/gangstar_shared_archive
+work/tests/gangstar_shared_archive
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -I source -I lib -pthread source/gangstar_jni_strings.c tools/test_gangstar_jni_strings.c -Wl,--wrap=calloc,--wrap=free -o work/tests/gangstar_jni_strings
+work/tests/gangstar_jni_strings
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_source_cache.c -Wl,--wrap=malloc,--wrap=free -o work/tests/gangstar_source_cache
+work/tests/gangstar_source_cache
+
+python3 tools/test_gangstar_weapon_guard.py
+
+python3 tools/test_gangstar_route_generation.py
+
+cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -DRIO_CACHE_BLOCK_KIB=32 -I source tools/test_gangstar_archive_batch.c source/gangstar_archive_cache.c -o work/tests/archive_batch
+work/tests/archive_batch

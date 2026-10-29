@@ -15,6 +15,15 @@ static inline float gangstar_walk_angle(float x, float y) {
     return -atan2f(x, -y);
 }
 
+// Aircraft physics reads the same two normalized axes written by its tilt
+// handler. Recover them from EvStickMove's polar representation.
+static inline void gangstar_aircraft_axes(float angle,float strength,float *x,float *y) {
+    strength=fmaxf(0,fminf(strength,1));
+    *x=-sinf(angle)*strength;
+    // Aircraft forward/backward uses the opposite sign to Vita screen Y.
+    *y=cosf(angle)*strength;
+}
+
 // Match the Android PowerA camera's 20 units/frame at 60 Hz. Accumulate the
 // fractional part so slow stick movement survives its integer scroll API.
 static inline int gangstar_camera_delta(float axis, float seconds, float *remainder) {

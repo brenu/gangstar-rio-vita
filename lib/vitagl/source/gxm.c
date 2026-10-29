@@ -22,6 +22,7 @@
  */
 
 #include "shared.h"
+#include "utils/retire_queue.h"
 
 #define MAX_SCENES_PER_FRAME 8 // Maximum amount of scenes per frame allowed by sceGxm per render target
 
@@ -280,19 +281,13 @@ int garbage_collector(unsigned int args, void *arg) {
 		sceKernelWaitSema(gc_mutex[0], 1, NULL);
 #endif
 		// Purging all elements marked for deletion
-		for (int i = 0; i < FRAME_PURGE_LIST_SIZE; i++) {
-			if (frame_purge_list[frame_purge_clean_idx][i]) {
-				vgl_free(frame_purge_list[frame_purge_clean_idx][i]);
-				frame_purge_list[frame_purge_clean_idx][i] = NULL;
-			} else
-				break;
-		}
+		vgl_retire_queue_collect(frame_purge_list[frame_purge_clean_idx],
+			FRAME_PURGE_LIST_SIZE, vgl_free);
 		for (int i = 0; i < FRAME_PURGE_RENDERTARGETS_LIST_SIZE; i++) {
 			if (frame_rt_purge_list[frame_purge_clean_idx][i]) {
 				sceGxmDestroyRenderTarget(frame_rt_purge_list[frame_purge_clean_idx][i]);
 				frame_rt_purge_list[frame_purge_clean_idx][i] = NULL;
-			} else
-				break;
+			}
 		}
 		frame_purge_clean_idx = (frame_purge_clean_idx + 1) % FRAME_PURGE_FREQ;
 		frame_purge_idx = (frame_purge_idx + 1) % FRAME_PURGE_FREQ;

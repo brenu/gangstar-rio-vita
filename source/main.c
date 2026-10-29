@@ -1,3 +1,4 @@
+#include "gangstar_jni_strings.h"
 #include "gangstar_audio_poll.h"
 /* Gangstar Rio diagnostic loader, derived from the local Vita SO loader. */
 #include "utils/init.h"
@@ -39,6 +40,7 @@ void gangstar_native_startup_frame(void);
 void gangstar_native_reuse_frame(unsigned);
 void gangstar_native_reuse_report(void);
 void gangstar_native_startup_report(unsigned frame);
+void gangstar_heap_diag_report(unsigned frame);
 void gangstar_audio_report(void);
 void gangstar_audio_output_report(void);
 
@@ -224,6 +226,7 @@ static int gangstar_main(void) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         uint64_t step_begin = sceKernelGetProcessTimeWide();
         step(&jni, game_class);
+        gangstar_jni_strings_frame_end();
 
         uint64_t swap_begin = sceKernelGetProcessTimeWide();
         gl_swap();
@@ -359,6 +362,11 @@ static int gangstar_main(void) {
             if (hitch_dropped) l_info("RIO_HITCH dropped=%u", hitch_dropped);
             hitch_count = hitch_dropped = 0;
             gangstar_io_report();
+            gangstar_heap_diag_report(frame);
+            RioJniStringStats strings=gangstar_jni_strings_stats();
+            l_info("RIO_JNI_STRINGS live=%u bytes=%u created=%u destroyed=%u globals=%u pins=%u",
+                (unsigned)strings.live,(unsigned)strings.bytes,(unsigned)strings.created,
+                (unsigned)strings.destroyed,(unsigned)strings.globals,(unsigned)strings.pins);
             gangstar_archive_report();
             gangstar_native_reuse_report();
             gangstar_audio_report();

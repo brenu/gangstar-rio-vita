@@ -13,6 +13,16 @@ static int camera_distance(int fps, float axis) {
 }
 
 int main(void) {
+    float ax,ay;
+    const float directions[][2]={{0,-1},{1,0},{0,1},{-1,0},{0.3f,-0.4f},{0,0}};
+    for(unsigned i=0;i<sizeof(directions)/sizeof(*directions);++i) {
+        float x=directions[i][0],y=directions[i][1];
+        gangstar_aircraft_axes(gangstar_walk_angle(x,y),sqrtf(x*x+y*y),&ax,&ay);
+        assert(fabsf(ax-x)<0.00001f && fabsf(ay+y)<0.00001f);
+    }
+    gangstar_aircraft_axes(0,0,&ax,&ay);assert(ax==0 && ay==0);
+    gangstar_aircraft_axes(0,2,&ax,&ay);assert(ax==0 && ay==1);
+    gangstar_aircraft_axes(0,-1,&ax,&ay);assert(ax==0 && ay==0);
     int camera_active = 0;
     assert(!gangstar_camera_should_send(0, 0, &camera_active));
     assert(gangstar_camera_should_send(0, 5, &camera_active) && camera_active);
@@ -56,5 +66,5 @@ int main(void) {
     float remainder = 0.9f;
     assert(gangstar_camera_delta(0, 1.0f/60, &remainder) == 0 && remainder == 0);
     assert(gangstar_camera_delta(1, 10, &remainder) <= 60); // no resume jump
-    puts("Gangstar analog: deadzone, diagonal speed, walking directions and frame-independent camera passed");
+    puts("Gangstar analog: deadzone, diagonal speed, walking/aircraft directions, aircraft neutral and frame-independent camera passed");
 }

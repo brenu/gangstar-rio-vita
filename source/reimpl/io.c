@@ -115,10 +115,10 @@ void gangstar_io_report(void) {
         atomic_exchange(&rio_read_us, 0), atomic_exchange(&rio_read_worst, 0),
         atomic_exchange(&rio_rejected_probes, 0),atomic_exchange(&rio_rejected_obb_children,0),atomic_exchange(&rio_rejected_embedded_obb,0));
 #ifdef GANGSTAR_LOOSE_IO_BUFFERING
-    l_info("RIO_FILE_BUFFER reads=%u writes=%u failures=%u read_buffer=16384 write_buffer=65536",
+    l_info("RIO_FILE_BUFFER reads=%u writes=%u failures=%u read_buffer=16384 obb_read_buffer=131072 write_buffer=65536",
         atomic_exchange(&rio_buffered_reads,0),atomic_exchange(&rio_buffered_writes,0),atomic_exchange(&rio_buffer_failures,0));
 #endif
-    l_info("RIO_IO_WORST bytes=%u caller=0x%x tid=0x%x obb_buffer=16384",
+    l_info("RIO_IO_WORST bytes=%u caller=0x%x tid=0x%x obb_buffer=131072",
         atomic_load(&rio_worst_bytes), atomic_load(&rio_worst_caller), atomic_load(&rio_worst_tid));
 }
 
@@ -147,12 +147,31 @@ FILE * fopen_soloader(const char * filename, const char * mode) {
 #ifdef USE_SCELIBC_IO
     FILE* ret = sceLibcBridge_fopen(filename, mode);
 #else
-    FILE* ret = fopen(filename, mode);
+    int archive_root=!strcmp(filename,DATA_PATH "main.12030.com.gameloft.android.ANMP.GloftG4HM.obb") ||
+        !strcmp(filename,DATA_PATH "patch.12136.com.gameloft.android.ANMP.GloftG4HM.obb");
+    FILE *ret=NULL;
+    if(archive_root && mode[0]=='r' && !strchr(mode,'+')) {
+        int fd=gangstar_archive_open_shared(filename);
+        if(fd==-2)ret=fopen(filename,mode);
+        else if(fd>=0) {
+            ret=fdopen(fd,mode);
+            if(!ret){int error=errno;gangstar_archive_close(fd);errno=error;}
+        }
+    } else ret=fopen(filename,mode);
+    if(archive_root && !ret) {
+        int failure=errno;
+        unsigned descriptors=0;
+        struct stat status;
+        for(int fd=0;fd<256;++fd)if(!fstat(fd,&status))++descriptors;
+        l_error("RIO_OPEN_FAILURE errno=%d open_descriptors=%u path=%s",
+            failure,descriptors,filename);
+        errno=failure;
+    }
     ret = gangstar_archive_stream(ret, filename, mode);
 #ifdef GANGSTAR_LOOSE_IO_BUFFERING
     if(ret) {
         int writable=mode[0]=='w' || mode[0]=='a' || strchr(mode,'+');
-        size_t buffer=writable?64*1024:16*1024;
+        size_t buffer=writable?64*1024:archive_root?128*1024:16*1024;
         if(setvbuf(ret,NULL,_IOFBF,buffer))atomic_fetch_add(&rio_buffer_failures,1);
         else if(writable)atomic_fetch_add(&rio_buffered_writes,1);
         else atomic_fetch_add(&rio_buffered_reads,1);
@@ -164,7 +183,7 @@ FILE * fopen_soloader(const char * filename, const char * mode) {
             // Newlib's small default buffer turns sequential archive reads
             // into many storage calls. FILE owns/frees this larger buffer;
             // standard fseek/ftell and EOF behavior stay in newlib.
-            if (setvbuf(ret, NULL, _IOFBF, 16 * 1024))
+            if (setvbuf(ret, NULL, _IOFBF, 128 * 1024))
                 l_warn("Gangstar OBB buffering unavailable: %s", filename);
         }
     }

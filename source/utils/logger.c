@@ -147,6 +147,29 @@ void _log_print(int t, const char* fmt, ...) {
 #ifdef GANGSTAR_ASYNC_LOG
     if (log_async) {
         size_t length=strlen(buffer_b);
+        /* Preserve error records across an immediate native crash. In
+           particular, allocation diagnostics are emitted just before the
+           failed caller may fault; queued writes would otherwise be lost. */
+        if (t==LT_ERROR) {
+            while (!log_closing && (log_queue.used || log_busy))
+                pthread_cond_wait(&log_changed,&log_lock);
+            size_t offset=0;
+            uint64_t began=sceKernelGetProcessTimeWide();
+            sceClibPrintf("%s",buffer_b);
+            while (gangstar_log_fd>=0 && offset<length) {
+                int written=sceIoWrite(gangstar_log_fd,buffer_b+offset,length-offset);
+                if (written<=0) break;
+                offset+=(size_t)written;
+            }
+            if (gangstar_log_fd>=0) sceIoSyncByFd(gangstar_log_fd,0);
+            uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+            log_written+=offset;
+            if (offset!=length && gangstar_log_fd>=0) ++log_errors;
+            log_write_us+=elapsed;
+            if (elapsed>log_write_worst) log_write_worst=elapsed;
+            pthread_mutex_unlock(&log_lock);
+            return;
+        }
         char fatal_record[2048]; const char *record=buffer_b;
         if (t==LT_FATAL) {
             memcpy(fatal_record,buffer_b,length); record=fatal_record;

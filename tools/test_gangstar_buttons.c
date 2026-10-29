@@ -14,7 +14,8 @@ int main(void){
  reset();rio_pad_actions(&p,1,RIO_R|RIO_SQUARE,emit,0);assert(count==1&&types[0]==0&&states[0]==0);
  rio_pad_actions(&p,1,RIO_SQUARE,emit,0);assert(count==2&&states[1]==1);
  rio_pad_actions(&p,0,RIO_SQUARE,emit,0);assert(count==3&&states[2]==3);
- reset();rio_pad_actions(&p,1,RIO_SQUARE,emit,0);assert(!count);
+ reset();rio_pad_actions(&p,1,RIO_SQUARE,emit,0);assert(count==1&&types[0]==0&&states[0]==3);
+ reset();
  rio_pad_actions(&p,1,0,emit,0);assert(!count);
  rio_pad_actions(&p,1,RIO_TRIANGLE,emit,0);assert(count==1&&types[0]==2&&states[0]==0);
  rio_pad_actions(&p,1,0,emit,0);assert(count==2&&states[1]==2);
@@ -29,5 +30,19 @@ int main(void){
  reset();rio_pad_actions(&p,2,0,emit,0);rio_pad_actions(&p,2,RIO_TRIANGLE,emit,0);assert(!count);
  rio_pad_actions(&p,2,0,emit,0);assert(count==1&&types[0]==2&&states[0]==2);
  reset();rio_pad_actions(&p,2,RIO_START,emit,0);rio_pad_actions(&p,2,0,emit,0);assert(!count);
+ uint32_t consumed=0;
+ // Native cutscene press must keep its native release after gameplay resumes.
+ assert(!rio_key_consume(&consumed,1,0,1));
+ assert(!rio_key_consume(&consumed,1,1,0) && consumed==0);
+ assert(rio_key_consume(&consumed,1,1,1) && consumed==1);
+ assert(rio_key_consume(&consumed,1,0,0) && consumed==0);
+ assert(!rio_key_consume(&consumed,1,1,0));
+ RioPadActions resume={0};reset();rio_pad_actions(&resume,1,0,emit,0);
+ rio_pad_actions(&resume,1,RIO_CROSS|RIO_SQUARE,emit,0);
+ rio_pad_actions(&resume,0,0,emit,0);reset();
+ rio_pad_actions(&resume,0,0,emit,0);assert(!count);
+ rio_pad_actions(&resume,1,0,emit,0);
+ assert(count==2 && states[0]==3 && states[1]==3);
+ reset();rio_pad_actions(&resume,1,0,emit,0);assert(!count);
  puts("Button actions: native states, sprint, attack hold/combined sources, context cancellation, held-input blocking, enter car, weapon/map/cover release, nitro and pedal isolation passed");
 }
