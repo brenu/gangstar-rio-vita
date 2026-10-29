@@ -3,6 +3,8 @@
 #include "utils/logger.h"
 #include "utils/dialog.h"
 #include "gangstar_trophies.h"
+#include "gangstar_jni_classes.h"
+#include "gangstar_jni_strings.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -46,6 +48,16 @@ void gangstar_java_poll(void) {
 }
 
 static const char locale_class[] = "java/util/Locale";
+static RioJniClasses java_classes;
+static pthread_mutex_t class_lock = PTHREAD_MUTEX_INITIALIZER;
+static jclass find_class(JNIEnv *env,const char *name) {
+    (void)env;
+    pthread_mutex_lock(&class_lock);
+    const char *handle=rio_jni_class_intern(&java_classes,name);
+    pthread_mutex_unlock(&class_lock);
+    if(!handle)fatal_error("Gangstar JNI: invalid class name or class table full");
+    return (jclass)handle;
+}
 static void (*delete_global_original)(JNIEnv *, jobject);
 static jclass object_class(JNIEnv *env, jobject obj) {
     (void)env;
@@ -54,7 +66,10 @@ static jclass object_class(JNIEnv *env, jobject obj) {
     return NULL;
 }
 static void delete_global(JNIEnv *env, jobject obj) {
-    if (obj != (jobject)locale_class) delete_global_original(env, obj);
+    pthread_mutex_lock(&class_lock);
+    int owned=rio_jni_class_owned(&java_classes,obj);
+    pthread_mutex_unlock(&class_lock);
+    if (!owned && obj != (jobject)locale_class) delete_global_original(env, obj);
 }
 typedef struct { char *clazz, *name, *sig; atomic_uint calls; } Method;
 static Method methods[256];
@@ -136,7 +151,7 @@ static jobject object_v(JNIEnv *env, jobject obj, jmethodID id, va_list args) {
     else if (!strcmp(m->name, "getObbPatchFileName")) value = DATA_PATH "patch.12136.com.gameloft.android.ANMP.GloftG4HM.obb";
     else if (!strcmp(m->name, "getIMEI")) value = ""; // No telephony on Vita.
     else unsupported(m);
-    return (*env)->NewStringUTF(env, value);
+    return gangstar_jni_string_constant(value);
 }
 static void void_v(JNIEnv *env, jobject obj, jmethodID id, va_list args) {
     (void)env; (void)obj; (void)args;
@@ -271,8 +286,10 @@ WRAPPER(real, jfloat)
 static void void_call(JNIEnv *env, jobject obj, jmethodID id, ...) {
     va_list args; va_start(args,id); void_v(env,obj,id,args); va_end(args);
 }
+static uintptr_t jni_thread_id(void) {return (uintptr_t)sceKernelGetThreadId();}
 void gangstar_java_install(void) {
     struct JNINativeInterface *table = (struct JNINativeInterface *)jni;
+    table->FindClass = find_class;
     delete_global_original = table->DeleteGlobalRef;
     table->DeleteGlobalRef = delete_global;
     table->GetObjectClass = object_class;
@@ -290,5 +307,6 @@ void gangstar_java_install(void) {
     table->CallStaticBooleanMethodV = boolean_v;
     table->CallStaticFloatMethod = real;
     table->CallStaticFloatMethodV = real_v;
+    gangstar_jni_strings_install(table,jni_thread_id);
     l_info("Gangstar Java bridge installed");
 }

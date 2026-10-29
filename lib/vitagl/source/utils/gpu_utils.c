@@ -25,7 +25,9 @@
 
 #include "texture_swizzler.h"
 #include "etc1_mip_reserve.h"
+#include "compressed_mip_layout.h"
 #ifdef VGL_UPLOAD_STAGES
+extern void gangstar_upload_layout_error(int,unsigned,unsigned,unsigned,unsigned) __attribute__((weak));
 extern void gangstar_upload_fallback(unsigned,unsigned,unsigned,size_t,size_t,size_t,unsigned,size_t) __attribute__((weak));
 extern uint64_t gangstar_upload_clock(void) __attribute__((weak));
 extern void gangstar_upload_stage(unsigned, uint64_t, uint64_t) __attribute__((weak));
@@ -679,9 +681,8 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, SceGxmTextureFormat format, uint32_t image_size, const void *data, texture *tex, uint8_t src_bpp, GLboolean uncompressed) {
     const int profile_etc=(format==SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR);
     uint64_t profile_begin=upload_clock(profile_etc);
-	// If there's already a texture in passed texture object we first dealloc it
-	if (tex->status == TEX_VALID && !mip_level)
-		gpu_free_texture_data(tex);
+    // Keep the old base until its replacement has actually been allocated.
+    // On OOM it remains usable, and mismatching later mips are rejected below.
 
     upload_stage(0,profile_begin,0);
     profile_begin=upload_clock(profile_etc);
@@ -698,7 +699,17 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		aligned_max_width = aligned_width;
 		aligned_max_height = aligned_height;
 	} else {
+		if (tex->status != TEX_VALID || !tex->data) {
+			SET_GL_ERROR(GL_INVALID_OPERATION)
+		}
 		vglGetTexSizes(&tex->gxm_tex, &max_width, &max_height);
+		if (!vgl_compressed_mip_matches(mip_level, max_width, max_height, w, h)) {
+#ifdef VGL_UPLOAD_STAGES
+            if (gangstar_upload_layout_error)
+                gangstar_upload_layout_error(mip_level,max_width,max_height,w,h);
+#endif
+			SET_GL_ERROR(GL_INVALID_VALUE)
+		}
 		aligned_max_width = nearest_po2(max_width);
 		aligned_max_height = nearest_po2(max_height);
 	}
@@ -759,7 +770,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
                 if (!texture_data) {
                     // Reallocation in the same mspace failed, try manually.
                     texture_data=gpu_alloc_mapped_for_gpu(allocation_size);
-                    if (!texture_data) return; // Leave old data/descriptor intact on OOM.
+                    if (!texture_data) { SET_GL_ERROR(GL_OUT_OF_MEMORY) }
                     const int old_data_size=gpu_get_compressed_mipchain_size(mip_count,aligned_max_width,aligned_max_height,format);
                     vgl_memcpy(texture_data,tex->data,old_data_size);
                     gpu_free_texture_data(tex);
@@ -775,6 +786,9 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		tex_width = w;
 		tex_height = h;
 		texture_data = gpu_alloc_mapped_for_gpu(tex_size);
+		if (!texture_data) { SET_GL_ERROR(GL_OUT_OF_MEMORY) }
+		if (texture_data && tex->status == TEX_VALID)
+			gpu_free_texture_data(tex);
 	}
 
     upload_stage(1,profile_begin,image_size);

@@ -22,6 +22,7 @@
 #include "gangstar_wait_perf.h"
 #include "gangstar_audio_probe.h"
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <inttypes.h>
@@ -43,6 +44,11 @@
 #include <sys/unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+
+extern void *_ZdaPv;
+extern void *_ZdlPv;
+extern void *_Znaj;
+extern void *_Znwj;
 
 #include <so_util/so_util.h>
 #include <utime.h>
@@ -263,29 +269,222 @@ static void gangstar_syslog(int priority, const char *format, ...) {
     l_info("Android syslog[%d]: %s", priority, message);
 }
 
-static void gangstar_allocation_failed(const char *operation, size_t size) {
+/* Allocation-free ledger: all large buffers; optional sparse small-allocation
+ * sampling for short diagnostic runs. Normal builds exclude small objects. */
+#define RIO_HEAP_TRACK_MIN (4u * 1024u)
+#define RIO_HEAP_TRACK_SLOTS 16384u
+#define RIO_HEAP_TRACK_TOMBSTONE ((void *)(uintptr_t)1)
+typedef struct { void *ptr; uint32_t size; uintptr_t caller; } RioHeapTrack;
+static RioHeapTrack rio_heap_tracks[RIO_HEAP_TRACK_SLOTS];
+static atomic_flag rio_heap_track_lock = ATOMIC_FLAG_INIT;
+static uint64_t rio_heap_track_bytes, rio_heap_track_peak;
+static uint32_t rio_heap_track_count, rio_heap_track_dropped;
+
+static void rio_heap_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&rio_heap_track_lock, memory_order_acquire)) {}
+}
+static void rio_heap_unlock(void) {
+    atomic_flag_clear_explicit(&rio_heap_track_lock, memory_order_release);
+}
+#ifdef GANGSTAR_HEAP_TRACE
+// Mix all pointer bits: selecting low address bits biases aligned allocations.
+static int rio_heap_sample(const void *ptr) {
+    uint32_t x=(uint32_t)(uintptr_t)ptr;
+    x^=x>>16;x*=UINT32_C(0x7feb352d);x^=x>>15;
+    x*=UINT32_C(0x846ca68b);x^=x>>16;
+    return (x>>22)==0; // 1/1024, independent of pointer alignment.
+}
+#define RIO_HEAP_SMALL_RATE 1024u
+#else
+#define RIO_HEAP_SMALL_RATE 0u
+#endif
+#define RIO_HEAP_REPORT_SITES 24u
+static unsigned rio_heap_hash(const void *ptr) {
+    return (unsigned)(((uintptr_t)ptr >> 4) * UINT32_C(2654435761)) & (RIO_HEAP_TRACK_SLOTS - 1);
+}
+static unsigned rio_heap_find(const void *ptr) {
+    unsigned slot = rio_heap_hash(ptr);
+    for (unsigned n = 0; n < RIO_HEAP_TRACK_SLOTS; ++n) {
+        unsigned i = (slot + n) & (RIO_HEAP_TRACK_SLOTS - 1);
+        if (!rio_heap_tracks[i].ptr) return RIO_HEAP_TRACK_SLOTS;
+        if (rio_heap_tracks[i].ptr == ptr) return i;
+    }
+    return RIO_HEAP_TRACK_SLOTS;
+}
+static void rio_heap_remove(unsigned i) {
+    if (i >= RIO_HEAP_TRACK_SLOTS || !rio_heap_tracks[i].ptr) return;
+    rio_heap_track_bytes -= rio_heap_tracks[i].size;
+    --rio_heap_track_count;
+    // Backshift the probe cluster rather than accumulating tombstones. A long
+    // session must not make every untracked free scan the entire table.
+    unsigned hole=i, next=(i+1)&(RIO_HEAP_TRACK_SLOTS-1);
+    unsigned scanned=0;
+    while (rio_heap_tracks[next].ptr && scanned++ < RIO_HEAP_TRACK_SLOTS-1) {
+        unsigned home=rio_heap_hash(rio_heap_tracks[next].ptr);
+        if (((next-home)&(RIO_HEAP_TRACK_SLOTS-1)) >=
+            ((hole-home)&(RIO_HEAP_TRACK_SLOTS-1))) {
+            rio_heap_tracks[hole]=rio_heap_tracks[next]; hole=next;
+        }
+        next=(next+1)&(RIO_HEAP_TRACK_SLOTS-1);
+    }
+    rio_heap_tracks[hole]=(RioHeapTrack){0};
+}
+static int rio_heap_insert(void *ptr, size_t size, uintptr_t caller) {
+    if (!ptr || !size) return 1;
+    if (size < RIO_HEAP_TRACK_MIN) {
+#ifdef GANGSTAR_HEAP_TRACE
+        if(!rio_heap_sample(ptr))return 1;
+        size*=RIO_HEAP_SMALL_RATE;
+#else
+        return 1;
+#endif
+    }
+    unsigned slot = rio_heap_hash(ptr), tombstone = RIO_HEAP_TRACK_SLOTS;
+    for (unsigned n = 0; n < RIO_HEAP_TRACK_SLOTS; ++n) {
+        unsigned i = (slot + n) & (RIO_HEAP_TRACK_SLOTS - 1);
+        if (rio_heap_tracks[i].ptr == ptr) { rio_heap_tracks[i].caller=caller; return 1; }
+        if (rio_heap_tracks[i].ptr == RIO_HEAP_TRACK_TOMBSTONE && tombstone == RIO_HEAP_TRACK_SLOTS)
+            tombstone = i;
+        if (!rio_heap_tracks[i].ptr) {
+            if (tombstone != RIO_HEAP_TRACK_SLOTS) i = tombstone;
+            rio_heap_tracks[i] = (RioHeapTrack){ptr, (uint32_t)size, caller};
+            rio_heap_track_bytes += size;
+            ++rio_heap_track_count;
+            if (rio_heap_track_bytes > rio_heap_track_peak) rio_heap_track_peak = rio_heap_track_bytes;
+            return 1;
+        }
+    }
+    if (tombstone != RIO_HEAP_TRACK_SLOTS) {
+        rio_heap_tracks[tombstone] = (RioHeapTrack){ptr, (uint32_t)size, caller};
+        rio_heap_track_bytes += size;
+        ++rio_heap_track_count;
+        if (rio_heap_track_bytes > rio_heap_track_peak) rio_heap_track_peak = rio_heap_track_bytes;
+        return 1;
+    }
+    ++rio_heap_track_dropped;
+    return 0;
+}
+static void rio_heap_allocated(void *ptr, size_t size, uintptr_t caller) {
+    if (size < RIO_HEAP_TRACK_MIN) {
+#ifdef GANGSTAR_HEAP_TRACE
+        if(!rio_heap_sample(ptr))return;
+#else
+        return;
+#endif
+    }
+    rio_heap_lock(); rio_heap_insert(ptr, size, caller); rio_heap_unlock();
+}
+static void rio_heap_freed(void *ptr) {
+    if (!ptr) return;
+#ifdef GANGSTAR_HEAP_TRACE
+    if(!rio_heap_sample(ptr) && malloc_usable_size(ptr)<RIO_HEAP_TRACK_MIN)return;
+#endif
+    rio_heap_lock(); rio_heap_remove(rio_heap_find(ptr)); rio_heap_unlock();
+}
+static void rio_heap_reallocated(void *old_ptr, void *new_ptr, size_t size, uintptr_t caller) {
+    rio_heap_lock();
+    unsigned i = old_ptr ? rio_heap_find(old_ptr) : RIO_HEAP_TRACK_SLOTS;
+    int tracked = i < RIO_HEAP_TRACK_SLOTS;
+    uintptr_t origin = tracked ? rio_heap_tracks[i].caller : caller;
+    if (tracked) rio_heap_remove(i);
+    if (new_ptr) rio_heap_insert(new_ptr, size, origin);
+    rio_heap_unlock();
+}
+
+void gangstar_host_heap_allocated(void *ptr,size_t size,uintptr_t caller) {
+    rio_heap_allocated(ptr,size,caller);
+}
+void gangstar_host_heap_freed(void *ptr) { rio_heap_freed(ptr); }
+void gangstar_host_heap_reallocated(void *old_ptr,void *new_ptr,size_t size,uintptr_t caller) {
+    rio_heap_reallocated(old_ptr,new_ptr,size,caller);
+}
+
+void gangstar_heap_diag_report(unsigned frame) {
+    struct { uintptr_t caller; uint32_t count; uint64_t bytes; } top[RIO_HEAP_REPORT_SITES] = {{0}};
+    struct { uintptr_t caller; uint32_t count; uint64_t bytes; } sites[512] = {{0}};
+    uint32_t count, dropped;
+    uint64_t bytes, peak;
+    unsigned site_count = 0;
+    rio_heap_lock();
+    count = rio_heap_track_count; dropped = rio_heap_track_dropped;
+    bytes = rio_heap_track_bytes; peak = rio_heap_track_peak;
+    for (unsigned i = 0; i < RIO_HEAP_TRACK_SLOTS; ++i) {
+        RioHeapTrack *entry = &rio_heap_tracks[i];
+        if (!entry->ptr || entry->ptr == RIO_HEAP_TRACK_TOMBSTONE) continue;
+        unsigned j;
+        for (j = 0; j < site_count; ++j) if (sites[j].caller == entry->caller) break;
+        if (j == site_count) {
+            if (site_count == sizeof(sites) / sizeof(sites[0])) continue;
+            sites[site_count++] = (typeof(sites[0])){entry->caller, 0, 0};
+        }
+        ++sites[j].count; sites[j].bytes += entry->size;
+    }
+    rio_heap_unlock();
+    for (unsigned i = 0; i < site_count; ++i) {
+        unsigned smallest = 0;
+        for (unsigned j = 1; j < RIO_HEAP_REPORT_SITES; ++j) if (top[j].bytes < top[smallest].bytes) smallest = j;
+        if (sites[i].bytes > top[smallest].bytes) {
+            top[smallest].caller = sites[i].caller;
+            top[smallest].count = sites[i].count;
+            top[smallest].bytes = sites[i].bytes;
+        }
+    }
+    l_info("RIO_HEAP_LIVE frame=%u exact_min_bytes=%u small_sample_rate=%u tracked_allocs=%u estimated_mib=%llu estimated_peak_mib=%llu table_dropped=%u",
+        frame, RIO_HEAP_TRACK_MIN, RIO_HEAP_SMALL_RATE, count, (unsigned long long)(bytes / (1024 * 1024)),
+        (unsigned long long)(peak / (1024 * 1024)), dropped);
+    for (unsigned i = 0; i < RIO_HEAP_REPORT_SITES; ++i) if (top[i].count)
+        l_info("RIO_HEAP_SITE frame=%u caller=%p sampled_allocs=%u estimated_bytes=%llu",
+            frame, (void *)top[i].caller, top[i].count, (unsigned long long)top[i].bytes);
+}
+
+static void gangstar_allocation_failed(const char *operation, size_t size, uintptr_t caller) {
     static atomic_uint failures;
     if (atomic_fetch_add(&failures, 1) >= 16) return;
     struct mallinfo memory = mallinfo();
-    l_error("Gangstar %s failed: size=%u heap_used=%u heap_free=%u arena=%u",
-        operation, (unsigned)size, (unsigned)memory.uordblks,
+    l_error("Gangstar %s failed: size=%u caller=%p thread=%d heap_used=%u heap_free=%u arena=%u",
+        operation, (unsigned)size, (void *)caller, sceKernelGetThreadId(), (unsigned)memory.uordblks,
         (unsigned)memory.fordblks, (unsigned)memory.arena);
 }
 static void *gangstar_malloc(size_t size) {
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     void *result = malloc(size);
-    if (!result && size) gangstar_allocation_failed("malloc", size);
+    if (!result && size) gangstar_allocation_failed("malloc", size, caller);
+    if (result) rio_heap_allocated(result, size, caller);
     return result;
 }
 static void *gangstar_calloc(size_t count, size_t size) {
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     void *result = calloc(count, size);
     if (!result && count && size)
-        gangstar_allocation_failed("calloc", count <= SIZE_MAX / size ? count * size : SIZE_MAX);
+        gangstar_allocation_failed("calloc", count <= SIZE_MAX / size ? count * size : SIZE_MAX, caller);
+    if (result && size && count <= SIZE_MAX / size) rio_heap_allocated(result, count * size, caller);
     return result;
 }
 static void *gangstar_realloc(void *ptr, size_t size) {
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     void *result = realloc(ptr, size);
-    if (!result && size) gangstar_allocation_failed("realloc", size);
+    if (!result && size) gangstar_allocation_failed("realloc", size, caller);
+    if (result || !size) rio_heap_reallocated(ptr, result, size, caller);
     return result;
+}
+static void gangstar_free(void *ptr) { rio_heap_freed(ptr); free(ptr); }
+static void *gangstar_new(size_t size) {
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    void *result = ((void *(*)(size_t))_Znwj)(size);
+    if (result) rio_heap_allocated(result, size, caller);
+    return result;
+}
+static void *gangstar_new_array(size_t size) {
+    uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    void *result = ((void *(*)(size_t))_Znaj)(size);
+    if (result) rio_heap_allocated(result, size, caller);
+    return result;
+}
+static void gangstar_delete(void *ptr) {
+    rio_heap_freed(ptr); ((void (*)(void *))_ZdlPv)(ptr);
+}
+static void gangstar_delete_array(void *ptr) {
+    rio_heap_freed(ptr); ((void (*)(void *))_ZdaPv)(ptr);
 }
 
 static void *gangstar_new_array_nothrow(size_t size, const void *tag) {
@@ -413,11 +612,11 @@ so_default_dynlib default_dynlib[] = {
         { "_ZTVN10__cxxabiv117__class_type_infoE", (uintptr_t)&_ZTVN10__cxxabiv117__class_type_infoE },
         { "_ZTVN10__cxxabiv120__si_class_type_infoE", (uintptr_t)&_ZTVN10__cxxabiv120__si_class_type_infoE },
         { "_ZTVN10__cxxabiv121__vmi_class_type_infoE", (uintptr_t)&_ZTVN10__cxxabiv121__vmi_class_type_infoE },
-        { "_ZdaPv", (uintptr_t)&_ZdaPv },
-        { "_ZdlPv", (uintptr_t)&_ZdlPv },
-        { "_Znaj", (uintptr_t)&_Znaj },
+        { "_ZdaPv", (uintptr_t)&gangstar_delete_array },
+        { "_ZdlPv", (uintptr_t)&gangstar_delete },
+        { "_Znaj", (uintptr_t)&gangstar_new_array },
         { "_ZnajRKSt9nothrow_t", (uintptr_t)&gangstar_new_array_nothrow },
-        { "_Znwj", (uintptr_t)&_Znwj },
+        { "_Znwj", (uintptr_t)&gangstar_new },
         { "__aeabi_atexit", (uintptr_t)&__aeabi_atexit },
         { "__aeabi_d2lz", (uintptr_t)&__aeabi_d2lz },
         { "__aeabi_d2ulz", (uintptr_t)&__aeabi_d2ulz },
@@ -629,7 +828,7 @@ so_default_dynlib default_dynlib[] = {
 
         // Memory
         { "calloc", (uintptr_t)&gangstar_calloc },
-        { "free", (uintptr_t)&free },
+        { "free", (uintptr_t)&gangstar_free },
         { "malloc", (uintptr_t)&gangstar_malloc },
         { "memalign", (uintptr_t)&memalign },
         { "memcmp", (uintptr_t)&memcmp },

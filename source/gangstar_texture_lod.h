@@ -25,7 +25,7 @@ static inline void rio_lod_put(unsigned char *p, uint32_t n) {
 #define RIO_LOD_OUTPUT_SIZE (2796344u - RIO_LOD_SKIP)
 #ifdef GANGSTAR_WORLD_TEXTURE_LOD
 #include "gangstar_world_texture_manifest.h"
-#define RIO_LOD_RAM_LIMIT (64 * 1024 * 1024)
+#define RIO_LOD_RAM_LIMIT (32 * 1024 * 1024)
 #define RIO_LOD_SLOTS 384
 #define RIO_LOD_FAMILIES RIO_WORLD_LIGHTMAP_FAMILIES
 #else
@@ -139,22 +139,21 @@ static inline int rio_lod_plan(const unsigned char *h, size_t size, RioTextureLo
     rio_lod_put(out->header+28,levels-skipped_levels);
     return 1;
 }
-// Retain four originals, leaving menu allocation headroom. Uncached
-// time-of-day variants still use their original files, without mip rewriting.
+// Lightmaps retain every original byte and dimension; only their immutable
+// source payload is eligible for the bounded, reclaimable CPU cache.
 static inline int rio_lod_original_source(const char *name) {
-    int family=rio_lod_lightmap_family(name);
-    if (family<0) return 0;
-#ifdef GANGSTAR_WORLD_TEXTURE_LOD
-    if (rio_world_lightmaps[family].source_edge!=2048) return 0;
-#endif
+    return rio_lod_lightmap_name(name);
+}
+// Restore the measured 243-source preload set. Other lightmaps remain eligible
+// for demand caching without forcing all districts into memory at startup.
+static inline int rio_lod_preload_source(const char *name) {
+    if (rio_lod_replace_source(name)) return 1;
+    if (!name) return 0;
     const char *base=strrchr(name,'/');base=base?base+1:name;
-    static const char *const targets[]={
-        "rich_00_lightmap00.tga", "rich_01_lightmap00.tga",
-        "sugarloaf_lightmap00.tga", "mountain_lightmap00.tga"
-    };
-    for (unsigned i=0;i<sizeof(targets)/sizeof(*targets);++i)
-        if (!strcmp(base,targets[i])) return 1;
-    return 0;
+    return !strcmp(base,"rich_00_lightmap00.tga") ||
+        !strcmp(base,"rich_01_lightmap00.tga") ||
+        !strcmp(base,"sugarloaf_lightmap00.tga") ||
+        !strcmp(base,"mountain_lightmap00.tga");
 }
 static inline int rio_lod_cache_source(const char *name) {
     return rio_lod_replace_source(name) || rio_lod_original_source(name);
@@ -162,4 +161,6 @@ static inline int rio_lod_cache_source(const char *name) {
 const void *gangstar_texture_original_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 const void *gangstar_texture_lod_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 void gangstar_texture_lod_report(unsigned);
+// Main-thread loading phase only; uncached originals otherwise use native partial reads.
+void gangstar_texture_source_preloading(int);
 #endif

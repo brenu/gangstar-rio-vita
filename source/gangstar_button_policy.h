@@ -7,7 +7,13 @@ enum { RIO_CROSS=1u, RIO_SQUARE=2u, RIO_CIRCLE=4u, RIO_TRIANGLE=8u,
 static inline unsigned rio_triangle_action(int mode,int shop,int item) {
  return mode==1 && shop?4:mode==1 && item?3:2;
 }
-typedef struct { unsigned held, blocked; int mode; } RioPadActions;
+typedef struct { unsigned held, blocked; int mode; unsigned pending_cancel; } RioPadActions;
+// Consume a release only if this bridge consumed its matching press.
+static inline int rio_key_consume(uint32_t *held,uint32_t mask,int active,int down) {
+ if(down) { if(!active)return 0; *held|=mask; return 1; }
+ if(!(*held&mask))return 0;
+ *held&=~mask;return 1;
+}
 typedef void (*RioButtonEmit)(void *, unsigned, unsigned);
 // Verified EvVirtualButton states: 0=click, 1=held, 2=release, 3=cancel.
 // Styles: 0=click, 1=release action, 2=attack hold, 3=sprint hold,
@@ -28,12 +34,20 @@ static inline void rio_pad_actions(RioPadActions *p, int mode, unsigned buttons,
  if (mode!=p->mode) {
   for(unsigned i=0;i<sizeof(bindings)/sizeof(*bindings);++i) if(p->held&(1u<<i)) {
    unsigned style=p->mode==2?bindings[i].style_car:bindings[i].style_foot;
-   if(style>=2) emit(context,p->mode==2?bindings[i].type_car:bindings[i].type_foot,3);
+   if(style>=2) {
+    unsigned type=p->mode==2?bindings[i].type_car:bindings[i].type_foot;
+    emit(context,type,3);
+    if(!mode)p->pending_cancel|=1u<<type;
+   }
   }
   p->held=0;p->blocked=buttons;p->mode=mode;
  }
  p->blocked&=buttons; buttons&=~p->blocked;
  if(!mode)return;
+ // The original handler may have ignored cancellation while locked. Replay
+ // once it can receive input again, before accepting a fresh physical press.
+ for(unsigned type=0;type<32;++type)if(p->pending_cancel&(1u<<type))emit(context,type,3);
+ p->pending_cancel=0;
  for(unsigned i=0;i<sizeof(bindings)/sizeof(*bindings);++i) {
   unsigned mask=mode==2?bindings[i].car:bindings[i].foot;
   unsigned type=mode==2?bindings[i].type_car:bindings[i].type_foot;

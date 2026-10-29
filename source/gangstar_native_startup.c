@@ -16,11 +16,14 @@
 #include "gangstar_resident_policy.h"
 #include "gangstar_texture_identity.h"
 #include "gangstar_texture_pin.h"
+#include "gangstar_stream_guard.h"
 #include "utils/logger.h"
 #include <so_util/so_util.h>
 #include <kubridge.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <psp2/kernel/threadmgr.h>
@@ -146,7 +149,7 @@ static uintptr_t pak_vtable;
 static unsigned route_hits, route_misses, route_learned, route_failed, route_packed_misses, route_skipped;
 static atomic_uint route_max_readers, route_max_folders;
 #ifdef GANGSTAR_DIRECT_ASSET_PATHS
-typedef struct { uintptr_t reader, file; RioPathIndex index; } RioNativePathIndex;
+typedef struct { uintptr_t reader, file; unsigned generation; RioPathIndex index; } RioNativePathIndex;
 static RioNativePathIndex path_indexes[4];
 #ifdef GANGSTAR_AUDIO_DIRECT_PATHS
 /* Only accessed under the verified outer native filesystem write lock.
@@ -162,6 +165,12 @@ static struct Capture {
     uintptr_t reader, file;
     char resolved[RIO_ROUTE_PATH];
 } *capture;
+// OBB metadata is immutable. Only filesystem configuration mutations advance
+// this generation; all five mutation/lifetime hooks must install to enable it.
+static atomic_uint route_generation=1;
+static int route_generation_ready;
+static atomic_uint route_stamp_fast,route_stamp_full;
+static unsigned route_entry_hits;
 static void mix(uint64_t *hash, uintptr_t value) { *hash = (*hash ^ value) * UINT64_C(1099511628211); }
 // Called only from the verified outer createAndOpenFile call sites, which
 // already hold Rio's global recursive filesystem write lock.
@@ -188,11 +197,15 @@ static int route_stamp(uintptr_t parent, uint64_t *hash, int *all_packed) {
             mix(hash, *(unsigned char *)(reader + 0x2d));
         } else *all_packed = 0;
     }
+    if(route_generation_ready && *all_packed) {
+        mix(hash,atomic_load(&route_generation));
+        atomic_fetch_add(&route_stamp_fast,1);return 1;
+    }
+    atomic_fetch_add(&route_stamp_full,1);
     for (uintptr_t at = folders; at < folder_end; at += 4) {
         const unsigned char *name = *(const unsigned char **)at;
-        if (!name || strnlen((const char *)name, RIO_ROUTE_PATH) == RIO_ROUTE_PATH) return 0;
         mix(hash, (uintptr_t)name);
-        for (unsigned i = 0; ; ++i) { mix(hash, name[i]); if (!name[i]) break; }
+        if (!rio_route_mix_path(hash,(const char *)name)) return 0;
     }
     return 1;
 }
@@ -218,9 +231,10 @@ static int direct_path_open(uintptr_t out, uintptr_t parent, const char *query, 
         }
         unsigned slot=(unsigned)((at-first)/4);
         uintptr_t file=*(uintptr_t *)(reader+8);
-        if (indexes[slot].reader!=reader || indexes[slot].file!=file) {
+        unsigned generation=route_generation_ready?atomic_load(&route_generation):0;
+        if (indexes[slot].reader!=reader || indexes[slot].file!=file || indexes[slot].generation!=generation) {
             rio_path_index_clear(&indexes[slot].index);
-            indexes[slot].reader=reader; indexes[slot].file=file;
+            indexes[slot].reader=reader; indexes[slot].file=file; indexes[slot].generation=generation;
         }
         RioPathIndex *index=&indexes[slot].index;
         if (!rio_path_index_prepare(index,(const RioPakEntry *)entries,(end-entries)/16,
@@ -234,7 +248,11 @@ static int direct_path_open(uintptr_t out, uintptr_t parent, const char *query, 
             // and archive seek locking. Only filename resolution is replaced.
             probe_20(out,reader,(uintptr_t)found,extra);
             if (!*(uintptr_t *)out) { if(main_index)++path_fallback; return 0; }
-            if(routes)rio_route_store(routes,parent,stamp,query,reader,index->entries[found].name);
+            if(routes) {
+                rio_route_store(routes,parent,stamp,query,reader,index->entries[found].name);
+                RioRoute *route=rio_route_find(routes,parent,stamp,query);
+                if(route)route->entry=found;
+            }
             if(main_index)++path_hits; return 1;
         }
     }
@@ -272,6 +290,13 @@ static uintptr_t route_dispatch(uintptr_t out, uintptr_t parent, uintptr_t name,
         return probes[14].original(out, parent, name, extra);
     }
     if (r && r->reader && reader_present(parent, r->reader)) {
+        // A cached entry opens by number: no filename search or folder walk.
+        uintptr_t entries=*(uintptr_t *)(r->reader+0x20),end=*(uintptr_t *)(r->reader+0x24);
+        if(r->entry>=0 && probes[20].original && end>=entries &&
+            (unsigned)r->entry<(end-entries)/16) {
+            probe_20(out,r->reader,(uintptr_t)r->entry,extra);
+            if(*(uintptr_t *)out) {++route_hits;++route_entry_hits;return out;}
+        }
         char resolved[RIO_ROUTE_PATH]; strcpy(resolved, r->resolved);
         uintptr_t result = probes[16].original(out, r->reader, (uintptr_t)resolved, extra);
         if (*(uintptr_t *)out) { ++route_hits; return result; }
@@ -375,10 +400,11 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
                                 gangstar_texture_original_get(archive,entry->offset,entry->size,name,&length) :
                                 gangstar_texture_lod_get(archive,entry->offset,entry->size,name,&length);
                             if (small) {
-                                // Hidden C++ return pointer in a; native file borrows
-                                // the process-lifetime buffer and copies its name.
-                                uintptr_t result = make_memory_file(a, small, length, name, 0);
+                                // Hidden C++ return pointer in a; transfer ownership
+                                // so the native file frees this buffer when released.
+                                uintptr_t result = make_memory_file(a, small, length, name, 1);
                                 if (*(uintptr_t *)a) return result;
+                                free((void *)small);
                             }
                         }
 #endif
@@ -714,8 +740,9 @@ static void preload_world_sources(uintptr_t manager) {
     uint64_t began=sceKernelGetProcessTimeWide();
     unsigned ready=0, missing=0, original=0, expected_bytes=0, requested=0;
     const unsigned candidates=sizeof(rio_world_texture_names)/sizeof(*rio_world_texture_names);
+    gangstar_texture_source_preloading(1);
     for (unsigned i=0;i<candidates;++i) {
-        if (!rio_lod_cache_source(rio_world_texture_names[i])) continue;
+        if (!rio_lod_preload_source(rio_world_texture_names[i])) continue;
         ++requested;
         char path[192]; uintptr_t file=0;
         unsigned expected=rio_lod_original_source(rio_world_texture_names[i]) ? 2796344u : rio_world_texture_bytes[i];
@@ -727,9 +754,10 @@ static void preload_world_sources(uintptr_t manager) {
         unsigned size=((unsigned (*)(uintptr_t))file_vtable[0x20/4])(file);
         if (size==expected) ++ready; else ++original;
         // Native release takes the object, NOT the address of the local ref.
-        // It frees the wrapper; immutable reduced bytes remain in the CPU cache.
+        // It frees the owned reader; a separate cache copy remains if budget permits.
         world_source_file_release(file);
     }
+    gangstar_texture_source_preloading(0);
     world_source_preload_done=ready==requested;
     l_info("RIO_SOURCE_PREWARM requested=%u ready=%u missing=%u original=%u expected_bytes=%u elapsed_us=%llu",
         requested,ready,missing,original,expected_bytes,
@@ -1171,6 +1199,9 @@ void gangstar_native_startup_report(unsigned frame) {
                 probes[i].label, probes[i].calls, (unsigned long long)probes[i].us);
         }
 #ifdef GANGSTAR_ARCHIVE_ROUTE_CACHE
+    l_info("RIO_ROUTE_DIRECT entry_hits=%u generation_checks=%u full_folder_checks=%u generation=%u",
+        route_entry_hits,atomic_exchange(&route_stamp_fast,0),atomic_exchange(&route_stamp_full,0),atomic_load(&route_generation));
+    route_entry_hits=0;
     l_info("RIO_ROUTE frame=%u hits=%u misses=%u learned=%u failed=%u packed_miss_hits=%u skipped=%u max_readers=%u max_folders=%u", frame,
         route_hits, route_misses, route_learned, route_failed, route_packed_misses, route_skipped, route_max_readers, route_max_folders);
 #endif
@@ -1182,7 +1213,138 @@ void gangstar_native_startup_report(unsigned frame) {
 #endif
 }
 
+// CGlfReadFile::clone returns an object even if its OBB stream failed to open.
+// Native getPos/getSize unconditionally dereference that stream. Match seek's
+// failure behavior, with one bounded attempt to reopen the owned reader.
+static void (*native_stream_open)(void *);
+static void *stream_backend(void *file) { return *(void **)((char *)file+12); }
+static void reopen_stream(void *file) { native_stream_open(file); }
+static int stream_position(void *stream) {
+    uintptr_t *vtable=*(uintptr_t **)stream;
+    return ((int (*)(void *))vtable[0x3c/4])(stream);
+}
+static int stream_size(void *stream) {
+    uintptr_t *vtable=*(uintptr_t **)stream;
+    return ((int (*)(void *))vtable[0x30/4])(stream);
+}
+static void stream_reopen_report(void *file,int ready) {
+    static atomic_uint reports;
+    if(atomic_fetch_add(&reports,1)<16)
+        l_warn("RIO_STREAM_REOPEN ready=%d errno=%d path=%.192s",ready,errno,*(char **)((char *)file+16));
+}
+static int guarded_stream_position(void *file) {
+    const RioStreamQuery ops={stream_backend,reopen_stream,stream_position,stream_reopen_report};
+    return rio_stream_query(file,&ops);
+}
+static int guarded_stream_size(void *file) {
+    const RioStreamQuery ops={stream_backend,reopen_stream,stream_size,stream_reopen_report};
+    return rio_stream_query(file,&ops);
+}
+static void install_stream_guard(void) {
+    uintptr_t position=so_symbol(&so_mod,"_ZNK6glitch2io12CGlfReadFile6getPosEv");
+    uintptr_t size=so_symbol(&so_mod,"_ZNK6glitch2io12CGlfReadFile7getSizeEv");
+    native_stream_open=(void *)so_symbol(&so_mod,"_ZN6glitch2io12CGlfReadFile8openFileEv");
+    static const uint32_t prologue[]={0xe92d4010,0xe590300c};
+    if(!position || !size || !native_stream_open ||
+        memcmp((void *)position,prologue,sizeof(prologue)) ||
+        memcmp((void *)size,prologue,sizeof(prologue))) {
+        l_error("Gangstar stream guard: unsupported reader methods");return;
+    }
+    hook_addr(position,(uintptr_t)guarded_stream_position);
+    hook_addr(size,(uintptr_t)guarded_stream_size);
+    l_info("Gangstar stream guard: bounded reopen and failed-query handling installed");
+}
+#if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_ARCHIVE_ROUTE_CACHE)
+static struct RouteMutation {
+    const char *symbol; uint32_t expected[2]; NativeCall original;
+} route_mutations[]={
+    {"_ZN17CCustomFileSystem19addCustomPakArchiveEPKcbb",{0xe92d4ff0,0xe1a04000},NULL},
+    {"_ZN17CCustomFileSystem20addFolderFileArchiveEPKcbb",{0xe92d45f0,0xe24dd01c},NULL},
+    {"_ZN17CCustomFileSystemC1ERN3glf2FsE",{0xe92d4070,0xe59f503c},NULL},
+    {"_ZN17CCustomFileSystemC2ERN3glf2FsE",{0xe92d4070,0xe59f503c},NULL},
+    {"_ZN17CCustomFileSystemD1Ev",{0xe59f3098,0xe59f2098},NULL}
+};
+static uintptr_t route_mutation(unsigned n,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+    atomic_fetch_add(&route_generation,1);
+    uintptr_t result=route_mutations[n].original(a,b,c,d);
+    atomic_fetch_add(&route_generation,1);
+    return result;
+}
+#define ROUTE_MUTATION(N) static uintptr_t route_mutation_##N(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {return route_mutation(N,a,b,c,d);}
+ROUTE_MUTATION(0) ROUTE_MUTATION(1) ROUTE_MUTATION(2) ROUTE_MUTATION(3) ROUTE_MUTATION(4)
+static void install_route_generations(void) {
+    NativeCall wrappers[]={route_mutation_0,route_mutation_1,route_mutation_2,route_mutation_3,route_mutation_4};
+    unsigned installed=0;
+    for(unsigned i=0;i<5;++i) {
+        struct RouteMutation *p=&route_mutations[i];
+        uintptr_t address=so_symbol(&so_mod,p->symbol);
+        uint32_t code[6],literal[2]={0};
+        if(!address || address<so_mod.text_base || address+8>so_mod.text_base+so_mod.text_size ||
+           memcmp((void *)address,p->expected,8))continue;
+        for(unsigned n=0;n<2;++n)if((p->expected[n]&0xffff0000)==0xe59f0000)
+            memcpy(&literal[n],(void *)(address+n*4+8+(p->expected[n]&4095)),4);
+        if(!rio_startup_trampoline(code,address,p->expected,literal))continue;
+        uintptr_t target=(so_mod.patch_head+3)&~(uintptr_t)3;
+        if(target<so_mod.patch_base || target>so_mod.patch_base+so_mod.patch_size ||
+           sizeof(code)>so_mod.patch_base+so_mod.patch_size-target)break;
+        so_mod.patch_head=target+sizeof(code);
+        memcpy((void *)target,code,sizeof(code));kuKernelFlushCaches((void *)target,sizeof(code));
+        p->original=(NativeCall)target;hook_addr(address,(uintptr_t)wrappers[i]);
+        kuKernelFlushCaches((void *)address,8);++installed;
+    }
+    route_generation_ready=installed==5;
+    l_info("RIO_ROUTE_GENERATION hooks=%u ready=%d",installed,route_generation_ready);
+}
+#endif
+// Native swapWeapon assumes a current weapon even during mission equipment
+// transitions. Its sibling getCurrentWeapon explicitly permits no weapon.
+static uintptr_t (*weapon_current)(uintptr_t,uintptr_t);
+static uintptr_t (*weapon_in_list)(uintptr_t,int,uintptr_t);
+static void (*weapon_swap_original)(uintptr_t,uintptr_t,uintptr_t);
+static void guarded_weapon_swap(uintptr_t manager,uintptr_t character,uintptr_t info) {
+    uintptr_t current=0;
+    if(info) {
+        int index;memcpy(&index,(void *)(info+0x124),sizeof(index));
+        if(index>=0 && index<44) {
+            current=*(unsigned char *)(info+0x128) ? weapon_in_list(manager,index,info) : weapon_current(manager,info);
+        }
+    }
+    if(!current) {
+        static unsigned reports;
+        if(reports++<16)l_warn("RIO_WEAPON_SWAP skipped_empty_current info=0x%x",(unsigned)info);
+        return;
+    }
+    weapon_swap_original(manager,character,info);
+}
+static void install_weapon_guard(void) {
+    uintptr_t address=so_symbol(&so_mod,"_ZN13WeaponManager10swapWeaponER9CharacterR11WeaponInfos");
+    uintptr_t current=so_symbol(&so_mod,"_ZN13WeaponManager16getCurrentWeaponER11WeaponInfos");
+    uintptr_t list=so_symbol(&so_mod,"_ZN13WeaponManager15getWeaponInListEiR11WeaponInfos");
+    const uint32_t expected[]={0xe5d23128,0xe92d4070};
+    const uint32_t current_expected[]={0xe2512000,0x1a000002};
+    uint32_t code[6],literal[2]={0};
+    if(!address || !current || !list || memcmp((void *)address,expected,sizeof(expected)) ||
+       memcmp((void *)current,current_expected,sizeof(current_expected)) ||
+       !rio_startup_trampoline(code,address,expected,literal)) {
+        l_error("Gangstar weapon guard: unsupported methods");return;
+    }
+    uintptr_t target=(so_mod.patch_head+3)&~(uintptr_t)3;
+    if(target<so_mod.patch_base || target>so_mod.patch_base+so_mod.patch_size ||
+       sizeof(code)>so_mod.patch_base+so_mod.patch_size-target) {
+        l_error("Gangstar weapon guard: patch arena full");return;
+    }
+    so_mod.patch_head=target+sizeof(code);
+    memcpy((void *)target,code,sizeof(code));kuKernelFlushCaches((void *)target,sizeof(code));
+    weapon_current=(void *)current;weapon_in_list=(void *)list;weapon_swap_original=(void *)target;
+    hook_addr(address,(uintptr_t)guarded_weapon_swap);kuKernelFlushCaches((void *)address,8);
+    l_info("Gangstar weapon guard: empty current weapon handled");
+}
 void gangstar_native_startup_install(void) {
+    install_stream_guard();
+    install_weapon_guard();
+#if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_ARCHIVE_ROUTE_CACHE)
+    install_route_generations();
+#endif
     gangstar_audio_poll_init(so_mod.load_addr);
 #if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_AUDIO_HALF_CHUNKS)
     chunk_fill=so_symbol(&so_mod,"_ZN3vox22DecoderCursorInterface9DecodeRefERPvi");
@@ -1225,8 +1387,8 @@ void gangstar_native_startup_install(void) {
     if (direct_file_vtable) direct_file_vtable += 8;
 #ifdef GANGSTAR_SMALL_LIGHTMAPS
     make_memory_file = (void *)so_symbol(&so_mod, "_ZN6glitch2io20createMemoryReadFileEPvlPKcb");
-    l_info("Gangstar world sources: DDS ETC0 -> %u, borrowed native memory files, retained RAM cap %u MiB; slots=%u ready=%d",
-        GANGSTAR_TEXTURE_LOD_EDGE, RIO_LOD_RAM_LIMIT/(1024*1024), RIO_LOD_SLOTS, direct_file_vtable != 0 && make_memory_file != NULL);
+    l_info("Gangstar world sources: DDS ETC0 -> %u, native-owned reduced buffers; ready=%d",
+        GANGSTAR_TEXTURE_LOD_EDGE, direct_file_vtable != 0 && make_memory_file != NULL);
 #endif
 #endif
 #ifdef GANGSTAR_ARCHIVE_ROUTE_CACHE

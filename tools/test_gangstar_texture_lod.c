@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 static unsigned char header[128];
 static unsigned reads, read_bytes;
@@ -86,41 +87,60 @@ int main(int argc, char **argv) {
         }
 #endif
 #ifdef GANGSTAR_WORLD_TEXTURE_LOD
-    uint64_t source_budget=0; unsigned originals=0;
+    uint64_t source_budget=0; unsigned originals=0,preloaded=0;
     for (unsigned i=0;i<sizeof(rio_world_texture_names)/sizeof(*rio_world_texture_names);++i) {
         const char *name=rio_world_texture_names[i];
+        if (!rio_lod_preload_source(name)) continue;
+        ++preloaded;
         if (rio_lod_original_source(name)) { source_budget+=2796344; ++originals; }
         else if (rio_lod_replace_source(name)) source_budget+=rio_world_texture_bytes[i];
     }
-    assert(originals==4 && source_budget==52725304 && source_budget<=RIO_LOD_RAM_LIMIT);
+    assert(originals==4 && preloaded==243 && source_budget==52725304);
+    assert(source_budget < 64u*1024u*1024u);
+    assert(!rio_lod_preload_source("copacabana_lightmap02.tga"));
     const char *route_maps[]={"rich_00_lightmap00.tga","rich_01_lightmap00.tga",
         "sugarloaf_lightmap00.tga","mountain_lightmap00.tga"};
     for(unsigned i=0;i<sizeof(route_maps)/sizeof(*route_maps);++i)
         assert(rio_lod_original_source(route_maps[i]) && !rio_lod_replace_source(route_maps[i]));
-    assert(!rio_lod_original_source("rich_00_lightmap01.tga"));
-    assert(!rio_lod_original_source("copacabana_lightmap02.tga"));
-    assert(!rio_lod_original_source("southfavela_lightmap03.tga"));
-    assert(!rio_lod_original_source("_packetc/copacabana_lightmap01.tga"));
+    assert(rio_lod_original_source("rich_00_lightmap01.tga"));
+    assert(rio_lod_original_source("copacabana_lightmap02.tga"));
+    assert(rio_lod_original_source("southfavela_lightmap03.tga"));
+    assert(rio_lod_original_source("_packetc/copacabana_lightmap01.tga"));
     assert(!rio_lod_original_source("mountain_lightmap00.tga.extra"));
 #endif
     if (argc>1) {
         original_mode=1;uint32_t length=0;interrupt_once=1;
+        unsigned initial_reads=reads;
+        assert(!gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length));
+        assert(reads==initial_reads); // gameplay miss performs no full DDS read
+        gangstar_texture_source_preloading(1);
         const unsigned char *raw=gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
         assert(raw && length==2796344 && !memcmp(raw,header,128));
         for(unsigned i=128;i<length;++i) assert(raw[i]==(i&255));
+        gangstar_texture_source_preloading(0);
         unsigned before=reads;
-        assert(gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length)==raw && reads==before);
-        assert(!gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap01.tga",&length));
+        const void *again=gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
+        assert(again && again!=raw && reads==before && !memcmp(again,raw,length));
+        free((void *)again); free((void *)raw);
+        assert(!gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap04.tga",&length));
         assert(!gangstar_texture_original_get(0,100,2796344,"huds.bmp",&length));
+        gangstar_texture_source_preloading(1);
         fail_tail=1;assert(!gangstar_texture_original_get(0,4000100,2796344,"sugarloaf_lightmap00.tga",&length));
-        fail_tail=0;assert(gangstar_texture_original_get(0,4000100,2796344,"sugarloaf_lightmap00.tga",&length));
+        fail_tail=0;const void *sugar=gangstar_texture_original_get(0,4000100,2796344,"sugarloaf_lightmap00.tga",&length);
+        assert(sugar); free((void *)sugar);
         corrupt=1;assert(!gangstar_texture_original_get(0,8000100,2796344,"mountain_lightmap00.tga",&length));
         corrupt=0;
         const unsigned char *route=gangstar_texture_original_get(0,8000100,2796344,"rich_00_lightmap00.tga",&length);
         assert(route && length==2796344 && !memcmp(route,header,128));
         before=reads;
-        assert(gangstar_texture_original_get(0,8000100,2796344,"rich_00_lightmap00.tga",&length)==route && reads==before);
-        puts("Original lightmap cache: full byte identity, retained hits, exact families, interrupted/short reads and failed-fill fallback passed");
+        again=gangstar_texture_original_get(0,8000100,2796344,"rich_00_lightmap00.tga",&length);
+        assert(again && again!=route && reads==before && !memcmp(again,route,length));
+        free((void *)again); free((void *)route);
+        gangstar_texture_source_preloading(0);
+        before=reads;
+        assert(!gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length));
+        assert(reads==before);
+        puts("Original lightmap readers: byte identity, independent ownership, exact families, interrupted/short reads and failed-fill fallback passed");
         return 0;
     }
     RioTextureLod plan;
@@ -155,23 +175,21 @@ int main(int argc, char **argv) {
     assert(rio_lod_u32(first + 16) == GANGSTAR_TEXTURE_LOD_EDGE);
     for (unsigned i = 128; i < size; ++i) assert(first[i] == ((i + RIO_LOD_SKIP) & 255));
     unsigned before = reads;
-    assert(gangstar_texture_lod_get(0,100,2796344,"copacabana_lightmap00.tga",&size) == first && reads == before);
-    assert(gangstar_texture_lod_get(0,100+4000000,2796344,"southfavela_lightmap00.tga",&size));
-    unsigned after_south = reads;
-    assert(gangstar_texture_lod_get(0,100+4000000,2796344,"southfavela_lightmap00.tga",&size) && reads == after_south);
-    // This retained South Favela allocation also counts toward capacity.
+    const void *second = gangstar_texture_lod_get(0,100,2796344,"copacabana_lightmap00.tga",&size);
+    assert(second && second != first && reads == before && !memcmp(first, second, size));
+    free((void *)first); free((void *)second);
     before = reads;
     assert(!gangstar_texture_lod_get(0,100,2796344,"hud.tga",&size) && reads == before);
-    corrupt = 1; assert(!gangstar_texture_lod_get(0,100+4000000*30,2796344,"copacabana_lightmap00.tga",&size)); corrupt = 0;
-    fail_tail = 1; assert(!gangstar_texture_lod_get(0,100+4000000*30,2796344,"copacabana_lightmap00.tga",&size)); fail_tail = 0;
-    unsigned capacity = RIO_LOD_RAM_LIMIT / RIO_LOD_OUTPUT_SIZE;
-    if (capacity > RIO_LOD_SLOTS) capacity = RIO_LOD_SLOTS;
-    for (unsigned i = 2; i < capacity; ++i) assert(gangstar_texture_lod_get(0,100+4000000*i,2796344,"copacabana_lightmap00.tga",&size));
-    before = reads;
-    assert(!gangstar_texture_lod_get(0,100+4000000*capacity,2796344,"copacabana_lightmap00.tga",&size) && reads == before + (capacity < RIO_LOD_SLOTS ? 1 : 0));
-    before = reads;
-    assert(gangstar_texture_lod_get(0,100,2796344,"copacabana_lightmap00.tga",&size) == first && reads == before);
+    corrupt = 1; assert(!gangstar_texture_lod_get(0,120000100,2796344,"copacabana_lightmap00.tga",&size)); corrupt = 0;
+    fail_tail = 1; assert(!gangstar_texture_lod_get(0,120000100,2796344,"copacabana_lightmap00.tga",&size)); fail_tail = 0;
+    // Streaming past the old lifetime cache limit must keep returning reduced
+    // data; the reader destroys each buffer rather than retaining all regions.
+    for (unsigned i = 0; i < 400; ++i) {
+        const void *owned = gangstar_texture_lod_get(0,100+4000000u*i,2796344,"copacabana_lightmap00.tga",&size);
+        assert(owned && size == RIO_LOD_OUTPUT_SIZE);
+        free((void *)owned);
+    }
     assert(!gangstar_texture_lod_get(-1,100,2796344,"copacabana_lightmap00.tga",&size));
     assert(!gangstar_texture_lod_get(0,2119380680,2796344,"copacabana_lightmap00.tga",&size));
-    puts("Texture LOD: fresh original-data reads, exact lower mips, skipped top level, short reads/EINTR, corrupt/truncated fallback, retained lifetime and configured RAM/slot bounds passed");
+    puts("Texture LOD: fresh original-data reads, exact lower mips, skipped top level, short reads/EINTR, corrupt/truncated fallback, independent owned buffers and streaming beyond former cache limits passed");
 }

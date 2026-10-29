@@ -28,6 +28,8 @@ You need your own copy of the supported Android game. The repository and VPK do 
 | Start | Pause (original gamepad input) | Pause (original gamepad input) |
 | Touchscreen | Menus and contextual prompts | Menus and contextual prompts |
 
+Aircraft use the left stick for pitch/roll through the game's native aircraft stick controls; R/L provide the native accelerate/brake inputs. Physical tilt steering is disabled for cars and aircraft. Aircraft controls still need mission testing on hardware.
+
 The on-screen control drawings are hidden, but their touch regions still work. Actions depend on the current weapon, vehicle and game state. Some contextual actions still use the touchscreen.
 
 ## Building the current version

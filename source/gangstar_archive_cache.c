@@ -58,9 +58,34 @@ retry: ;
         }
         RioArchiveBlock *block = &cache->blocks[victim];
         if (!found) {
-            *block = (RioArchiveBlock){.archive = archive, .offset = block_offset, .loading = 1};
+            // Batch cold sequential fills into at most 256 KiB. Reserve a
+            // contiguous cache span before releasing the metadata lock, so
+            // all destinations remain pinned while the single disk read runs.
+            unsigned batch=(unsigned)((count-done+within+RIO_CACHE_BLOCK_SIZE-1)/RIO_CACHE_BLOCK_SIZE);
+            unsigned maximum=(256u*1024u)/RIO_CACHE_BLOCK_SIZE;
+            if(count-done<2u*RIO_CACHE_BLOCK_SIZE)batch=1;
+            if(batch>maximum)batch=maximum;
+            if(batch>cache->block_count)batch=cache->block_count;
+            if(batch<2)batch=1;
+            unsigned span=victim;
+            if(span+batch>cache->block_count)span=cache->block_count-batch;
+            for(unsigned j=0;j<batch;++j)if(cache->blocks[span+j].loading) {batch=1;span=victim;break;}
+            victim=span;block=&cache->blocks[victim];
+            for(unsigned j=1;j<batch;++j) {
+                if(cache->blocks[victim+j].loading) {batch=j;break;}
+                int present=0;
+                for(unsigned k=0;k<cache->block_count;++k) {
+                    RioArchiveBlock *b=&cache->blocks[k];
+                    if((b->valid || b->loading) && b->archive==archive &&
+                       b->offset==block_offset+(uint64_t)j*RIO_CACHE_BLOCK_SIZE) {present=1;break;}
+                }
+                if(present) {batch=j;break;}
+            }
+            for(unsigned j=0;j<batch;++j)
+                cache->blocks[victim+j]=(RioArchiveBlock){.archive=archive,
+                    .offset=block_offset+(uint64_t)j*RIO_CACHE_BLOCK_SIZE,.loading=1};
             pthread_mutex_unlock(&cache->lock);
-            size_t needed = RIO_CACHE_BLOCK_SIZE;
+            size_t needed = (size_t)batch*RIO_CACHE_BLOCK_SIZE;
             if (file_size - block_offset < needed) needed = (size_t)(file_size - block_offset);
             size_t loaded = 0;
             int error = 0;
@@ -76,14 +101,19 @@ retry: ;
             cache->stats.disk_bytes += loaded;
             if (error || loaded != needed) {
                 if (!error) errno = EIO; // archive changed/truncated; do not cache it
-                block->loading = 0;
+                for(unsigned j=0;j<batch;++j)cache->blocks[victim+j].loading=0;
                 pthread_cond_broadcast(&cache->changed);
                 pthread_mutex_unlock(&cache->lock);
                 return done ? (ssize_t)done : -1;
             }
-            *block = (RioArchiveBlock){.archive = archive, .offset = block_offset,
-                .length = loaded, .valid = 1};
-            ++cache->stats.fills;
+            for(unsigned j=0;j<batch;++j) {
+                size_t length=loaded-(size_t)j*RIO_CACHE_BLOCK_SIZE;
+                if(length>RIO_CACHE_BLOCK_SIZE)length=RIO_CACHE_BLOCK_SIZE;
+                cache->blocks[victim+j]=(RioArchiveBlock){.archive=archive,
+                    .offset=block_offset+(uint64_t)j*RIO_CACHE_BLOCK_SIZE,
+                    .length=length,.valid=1,.age=++cache->age};
+            }
+            cache->stats.fills+=batch;
             cache->stats.miss_bytes += take;
             pthread_cond_broadcast(&cache->changed);
         } else cache->stats.hit_bytes += take;

@@ -34,6 +34,10 @@ static void step(Machine *m) {
 }
 int main(void) {
     const uint32_t prologues[][2] = {
+        {0xe92d4ff0,0xe1a04000},{0xe92d45f0,0xe24dd01c},
+        {0xe92d4070,0xe59f503c},{0xe59f3098,0xe59f2098},
+        {0xe5d23128,0xe92d4070}, // guarded weapon swap
+
         {0xe59f13e0, 0xe3a02000}, {0xe59f3398, 0xe92d4ff0},
         {0xe92d4ff0, 0xe1a07000}, {0xe92d45f0, 0xe59f818c},
         {0xe59f15b4, 0xe92d4ff0}, {0xe92d47f0, 0xe59f60fc},
@@ -66,6 +70,7 @@ int main(void) {
         if (prologues[p][1] == 0xe5913008 || prologues[p][1] == 0xe5913000) {
             original.r[1] = 0x7000; original.memory[0x7000 / 4] = 0x87654321; original.memory[0x7008 / 4] = 0xabcdef34;
         }
+        if(prologues[p][0]==0xe5d23128) {original.r[2]=0x7000;original.memory[(0x7000+0x128)/4]=0x01020304;}
         original.memory[0x6038 / 4] = 0x78563412; original.memory[0x602c / 4] = 0xdeadb007;
         uint32_t literals[2] = {0xabcd0001, 0xabcd0002}, code[6];
         memcpy(&original.memory[0x1000 / 4], prologues[p], 8);
@@ -85,5 +90,5 @@ int main(void) {
     uint32_t code[6], bad[] = {0xeb000000, 0xe3a02000}, literal[] = {0, 0};
     assert(!rio_startup_trampoline(code, 0x1000, bad, literal));
     bad[0] = 0xe59ff000; assert(!rio_startup_trampoline(code, 0x1000, bad, literal));
-    puts("Startup trampolines: all fifty prologues preserve registers/flags/stack/literals and return PC; unsupported instructions rejected");
+    puts("Startup trampolines: all verified prologues preserve registers/flags/stack/literals and return PC; unsupported instructions rejected");
 }

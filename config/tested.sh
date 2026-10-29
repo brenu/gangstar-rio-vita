@@ -1,5 +1,6 @@
 # Tested gameplay profile. Existing environment values take precedence.
 # Cache: 32 MiB / 32 KiB; actual allocation is checked at startup.
+: "${GANGSTAR_HEAP_TRACE:=OFF}"
 : "${GANGSTAR_GRAPHICS_DIAGNOSTICS:=OFF}"
 : "${GANGSTAR_SHARED_ARCHIVE_CACHE:=ON}"
 : "${GANGSTAR_ARCHIVE_CACHE_MIB:=32}"

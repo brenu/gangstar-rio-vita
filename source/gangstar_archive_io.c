@@ -131,9 +131,14 @@ static void native_backend_init(void) {
 #else
 static void native_backend_init(void) { (void)archive_paths; }
 #endif
-enum { MAX_HANDLES = 64 };
+// Vita newlib has 256 logical descriptors; many can share one kernel handle.
+enum { MAX_HANDLES = 256 };
+static int shared_roots[2]={-1,-1};
+static atomic_uint shared_root_count,shared_readers,shared_peak;
+static pthread_mutex_t root_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t physical_lock[2]={PTHREAD_MUTEX_INITIALIZER,PTHREAD_MUTEX_INITIALIZER};
 static struct Handle {
-    int fd, archive, closing;
+    int fd, archive, closing, shared;
     unsigned references;
     FILE *stream;
     off_t known_offset;
@@ -211,9 +216,13 @@ void gangstar_archive_track(int fd, const char *path, int flags) {
     struct stat st;
     if (archive < 0 || fstat(fd, &st) || (uint64_t)st.st_size != archive_sizes[archive]) return;
     pthread_mutex_lock(&table_lock);
+    for(unsigned i=0;i<MAX_HANDLES;++i)if(handles[i].fd==fd) {
+        pthread_mutex_unlock(&table_lock);return;
+    }
     for (unsigned i = 0; i < MAX_HANDLES; ++i) if (handles[i].fd == -1) {
         handles[i].archive = archive;
         handles[i].closing = 0;
+        handles[i].shared = 0;
         handles[i].references = 0;
         handles[i].stream = NULL;
         handles[i].offset_valid=handles[i].exposed=handles[i].dirty=0;
@@ -245,11 +254,40 @@ static void release(struct Handle *h) {
     pthread_mutex_unlock(&table_lock);
 }
 
+int gangstar_archive_open_shared(const char *path) {
+    if(!enabled)return -2;
+    int archive=-1;
+    for(unsigned i=0;i<2;++i)if(!strcmp(path,archive_paths[i]))archive=(int)i;
+    if(archive<0)return -2;
+    pthread_mutex_lock(&root_lock);
+    if(shared_roots[archive]<0) {
+        int root=open(path,O_RDONLY);struct stat st;
+        if(root>=0 && (!fstat(root,&st) && (uint64_t)st.st_size==archive_sizes[archive]))
+            {shared_roots[archive]=root;atomic_fetch_add(&shared_root_count,1);}
+        else if(root>=0){close(root);errno=EINVAL;}
+    }
+    int fd=shared_roots[archive]<0?-1:dup(shared_roots[archive]);
+    int error=errno;
+    pthread_mutex_unlock(&root_lock);
+    if(fd<0){errno=error;return -1;}
+    gangstar_archive_track(fd,path,O_RDONLY);
+    struct Handle *h=acquire(fd);
+    if(!h){close(fd);errno=EMFILE;return -1;}
+    h->shared=1;h->known_offset=0;h->offset_valid=1;
+    unsigned live=atomic_fetch_add(&shared_readers,1)+1,peak=atomic_load(&shared_peak);
+    while(live>peak && !atomic_compare_exchange_weak(&shared_peak,&peak,live)){}
+    release(h);
+    return fd;
+}
+
 static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t offset) {
     struct BackingContext *io = context;
     if (offset > INT32_MAX) { errno = EOVERFLOW; return -1; }
     uint64_t started = (io->tracing || io->audio) ? trace_clock() : 0;
     ssize_t result;
+    // Newlib pread may emulate seek/read/restore. Serialize physical reads on
+    // duplicates of the same root; logical cursor changes never touch it.
+    pthread_mutex_lock(&physical_lock[io->archive]);
 #if defined(__vita__) && defined(GANGSTAR_NATIVE_ARCHIVE_IO)
     int native = native_fds[io->archive];
     if (native >= 0) {
@@ -267,6 +305,7 @@ static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t o
     result = pread(io->fd, buffer, size, (off_t)offset);
 #endif
     int saved_errno = errno;
+    pthread_mutex_unlock(&physical_lock[io->archive]);
     if (io->tracing || io->audio) {
         uint64_t elapsed=trace_clock()-started;
         if(io->audio)trace_audio_phase(RIO_AUDIO_DISK,elapsed);
@@ -424,6 +463,7 @@ ssize_t gangstar_archive_read(int fd, void *buffer, size_t size) {
     atomic_fetch_add(&active_demand, 1);
     uint64_t query_started=context.audio?trace_clock():0;
     off_t offset;
+    if(h->shared)offset=h->known_offset;else
 #if defined(GANGSTAR_ARCHIVE_READ_POSITION_CACHE) || defined(GANGSTAR_ARCHIVE_VIRTUAL_CURSOR)
     if(h->stream && h->offset_valid && !h->exposed) {
         offset=h->known_offset;
@@ -443,6 +483,7 @@ ssize_t gangstar_archive_read(int fd, void *buffer, size_t size) {
         if(result>0) {
             uint64_t set_started=context.audio?trace_clock():0;
             off_t advanced;
+            if(h->shared)advanced=offset+result;else
 #ifdef GANGSTAR_ARCHIVE_VIRTUAL_CURSOR
             if(h->stream && !h->exposed) {
                 advanced=offset+result; h->dirty=1;
@@ -490,6 +531,14 @@ ssize_t gangstar_archive_pread(int fd, void *buffer, size_t size, off_t offset) 
 
 off_t gangstar_archive_seek(int fd, off_t offset, int whence) {
     struct Handle *h = acquire(fd);
+    if(h && h->shared) {
+        int64_t base=whence==SEEK_SET?0:whence==SEEK_CUR?h->known_offset:
+            whence==SEEK_END?(int64_t)archive_sizes[h->archive]:-1;
+        int64_t target=base+(int64_t)offset;
+        if(base<0 || target<0 || target>INT32_MAX) {release(h);errno=EINVAL;return -1;}
+        h->known_offset=(off_t)target;h->offset_valid=1;
+        release(h);return (off_t)target;
+    }
     /* Deferred read advances must never be replaced by a stale kernel query,
        including when the independent tell-query shortcut is disabled. */
     if(h && h->dirty && whence==SEEK_CUR) {
@@ -519,6 +568,7 @@ off_t gangstar_archive_seek(int fd, off_t offset, int whence) {
 int gangstar_archive_expose(int fd) {
     struct Handle *h=acquire(fd);
     if(h) {
+        if(h->shared) {h->exposed=1;release(h);return 0;}
         if(h->dirty) {
             if(lseek(fd,h->known_offset,SEEK_SET)<0) {
                 int error=errno;atomic_fetch_add(&cursor_sync_errors,1);
@@ -540,7 +590,7 @@ static int close_handle(int fd, int close_fd) {
         h->closing = 1;
         while (h->references) pthread_cond_wait(&table_changed, &table_lock);
         int result = close_fd ? close(fd) : 0;
-        if (!result) { h->fd = -1; h->stream = NULL; }
+        if (!result) { if(h->shared)atomic_fetch_sub(&shared_readers,1);h->shared=0;h->fd = -1;h->stream = NULL; }
         h->closing = 0;
         pthread_mutex_unlock(&table_lock);
         return result;
@@ -582,13 +632,14 @@ FILE *gangstar_archive_stream(FILE *original, const char *path, const char *mode
     struct Handle *handle = acquire(fd);
     if (!handle) return original;
     if (handle->stream) { release(handle); return original; }
+    int shared=handle->shared;
     release(handle);
     struct ArchiveStream *cookie = malloc(sizeof(*cookie));
-    if (!cookie) { gangstar_archive_forget(fd); return original; }
+    if (!cookie) { gangstar_archive_forget(fd); if(shared){int error=errno;fclose(original);errno=error;return NULL;}return original; }
     *cookie = (struct ArchiveStream){original, fd};
     cookie_io_functions_t functions = {.read = stream_read, .seek = stream_seek, .close = stream_close};
     FILE *stream = fopencookie(cookie, mode, functions);
-    if (!stream) { free(cookie); gangstar_archive_forget(fd); return original; }
+    if (!stream) { int error=errno;free(cookie);gangstar_archive_forget(fd);if(shared){fclose(original);errno=error;return NULL;}return original; }
     pthread_mutex_lock(&table_lock);
     for (unsigned i = 0; i < MAX_HANDLES; ++i)
         if (handles[i].fd == fd) { handles[i].stream = stream; break; }
@@ -613,6 +664,8 @@ int gangstar_archive_fileno(FILE *stream) {
 
 void gangstar_archive_report(void) {
     if (!enabled) return;
+    l_info("RIO_ARCHIVE_SHARED physical_roots=%u readers=%u peak_readers=%u",
+        atomic_load(&shared_root_count),atomic_load(&shared_readers),atomic_load(&shared_peak));
 #ifdef __vita__
     SceKernelFreeMemorySizeInfo headroom={.size=sizeof(headroom)};
     int memory_result=sceKernelGetFreeMemorySize(&headroom);

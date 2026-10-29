@@ -74,6 +74,7 @@ endif()
 option(GANGSTAR_PERFORMANCE_PROFILE "Quiet repeated diagnostics and optimize host bridge" OFF)
 option(GANGSTAR_VITAGL_PROFILING "Report VitaGL draw and GPU-queue timing counters" OFF)
 option(GANGSTAR_IO_PROFILE "Log slow guest file opens and reads" OFF)
+option(GANGSTAR_HEAP_TRACE "Sample host allocations for short memory diagnostics" OFF)
 option(GANGSTAR_GRAPHICS_DIAGNOSTICS "Enable expensive shader dumps and HUD/vertex tracing" OFF)
 option(GANGSTAR_SHARED_ARCHIVE_CACHE "Cache read-only main/patch stdio and descriptor blocks across opens" ON)
 option(GANGSTAR_WORLD_SOURCE_PREWARM "Preload all inventoried 512 world source mip chains during loading" OFF)
@@ -318,6 +319,7 @@ set(SOURCES
     source/gangstar_jni_tables.c
     source/gangstar_perf.c
     source/gangstar_java.c
+    source/gangstar_jni_strings.c
     source/gangstar_trophies.c
     source/gangstar_controls.c
     source/gangstar_audio_output.c
@@ -369,6 +371,13 @@ target_link_libraries(${CMAKE_PROJECT_NAME} rio_adpcm)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
   "-Wl,--wrap=sceAudioOutOpenPort,--wrap=sceAudioOutSetConfig,--wrap=sceAudioOutOutput")
 
+
+if(GANGSTAR_HEAP_TRACE)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE source/gangstar_heap_wrap.c)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GANGSTAR_HEAP_TRACE)
+  target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-Wl,--wrap=malloc,--wrap=calloc,--wrap=memalign,--wrap=realloc,--wrap=free,--wrap=_malloc_r,--wrap=_calloc_r,--wrap=_memalign_r,--wrap=_realloc_r,--wrap=_free_r")
+endif()
+
 add_subdirectory(lib/libc_bridge)
 add_dependencies(${CMAKE_PROJECT_NAME} SceLibcBridge)
 
@@ -390,6 +399,10 @@ if (GANGSTAR_UPLOAD_STAGES)
   string(APPEND VITAGL_MAKE_FLAGS " UPLOAD_STAGES=1")
 endif()
 string(APPEND VITAGL_MAKE_FLAGS " SAFE_DRAW=1")
+# This revision's GC worker advances the producer's global queue/index. Running
+# it concurrently with draw uploads can overwrite retirement entries. Collect
+# on the render thread, preserving the existing four-frame retirement delay.
+string(APPEND VITAGL_MAKE_FLAGS " SINGLE_THREADED_GC=1")
 string(APPEND VITAGL_MAKE_FLAGS " HAVE_SHADER_CACHE=1")
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
   "GANGSTAR_VITAGL_BUILD_FLAGS=\"${VITAGL_MAKE_FLAGS}\"")
