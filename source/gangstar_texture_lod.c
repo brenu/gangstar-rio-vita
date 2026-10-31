@@ -146,6 +146,26 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     (void)archive; (void)offset; (void)size; (void)name; (void)output_size; (void)original; (void)background;return NULL;
 #endif
 }
+// Immutable main-OBB ranges only; independent positional reads preserve reader cursors.
+int gangstar_lightmap_read_range(uint32_t offset,void *data,uint32_t start,uint32_t count) {
+#ifdef GANGSTAR_SMALL_LIGHTMAPS
+ if(!data || start>2796344u || count>2796344u-start ||
+    offset>=lengths[0] || 2796344u>lengths[0]-offset)return 0;
+ pthread_mutex_lock(&source_lock);
+ if(source_fds[0][0]<0) {
+  int fd=open(paths[0],O_RDONLY);struct stat st;
+  if(fd<0 || fstat(fd,&st) || (uint64_t)st.st_size!=lengths[0]) {
+   if(fd>=0)close(fd);
+   pthread_mutex_unlock(&source_lock);return 0;
+  }
+  gangstar_archive_track(fd,paths[0],O_RDONLY);source_fds[0][0]=fd;
+ }
+ int fd=source_fds[0][0];pthread_mutex_unlock(&source_lock);
+ return read_exact(fd,data,count,(uint64_t)offset+start,0);
+#else
+ (void)offset;(void)data;(void)start;(void)count;return 0;
+#endif
+}
 void gangstar_texture_source_preloading(int active) {
 #ifdef GANGSTAR_SMALL_LIGHTMAPS
     pthread_mutex_lock(&source_lock);source_preloading=active!=0;pthread_mutex_unlock(&source_lock);
