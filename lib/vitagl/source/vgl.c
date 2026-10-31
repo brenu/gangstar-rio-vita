@@ -116,9 +116,29 @@ static uint8_t *circular_data_pool;
 static uint8_t *circular_data_pool_ptr;
 static uint8_t *circular_data_pool_limit;
 #endif
+extern void gangstar_vertex_pool_report(unsigned,unsigned,unsigned,unsigned) __attribute__((weak));
 uint32_t circular_data_pool_size = CIRCULAR_POOL_SIZE_DEF;
 uint8_t *vgl_reserve_data_pool(uint32_t size) {
-#ifndef CIRCULAR_POOL_SPEEDHACK
+#if defined(RIO_SELECTIVE_VERTEX_COPY) && !defined(CIRCULAR_POOL_SPEEDHACK)
+ // Selective snapshots copy only fetched bytes, including byte/short tails.
+ // Keep every later allocation aligned too (indices, VBO updates, vertices).
+ if(size>UINT32_MAX-15u)return NULL;
+ uint32_t reserved=(size+15u)&~15u;
+ uintptr_t cursor=(uintptr_t)circular_data_pool_ptr[vgl_circular_idx];
+ uintptr_t limit=(uintptr_t)circular_data_pool_limit[vgl_circular_idx];
+ if(cursor<=UINTPTR_MAX-15u) {
+  uintptr_t aligned=(cursor+15u)&~(uintptr_t)15u;
+  if(aligned<=limit && reserved<=limit-aligned) {
+   circular_data_pool_ptr[vgl_circular_idx]=(uint8_t *)(aligned+reserved);
+   return (uint8_t *)aligned;
+  }
+ }
+ // Exhaustion leaves the pool cursor valid; fallback uses VitaGL's normal
+ // aligned allocation and frame garbage collection.
+ uint8_t *res=(uint8_t *)gpu_alloc_mapped_for_cpu(reserved);
+ mark_as_dirty(res);
+ return res;
+#elif !defined(CIRCULAR_POOL_SPEEDHACK)
 	uint8_t *res = circular_data_pool_ptr[vgl_circular_idx];
 	circular_data_pool_ptr[vgl_circular_idx] += size;
 	if (circular_data_pool_ptr[vgl_circular_idx] > circular_data_pool_limit[vgl_circular_idx]) {
@@ -352,6 +372,10 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 #ifndef CIRCULAR_POOL_SPEEDHACK
 	for (int i = 0; i < gxm_display_buffer_count; i++) {
 		circular_data_pool[i] = gpu_alloc_mapped_for_cpu(circular_data_pool_size / gxm_display_buffer_count);
+        if(gangstar_vertex_pool_report) {
+            unsigned type=vgl_mem_get_type_by_addr(circular_data_pool[i]);
+            gangstar_vertex_pool_report(i,circular_data_pool_size/gxm_display_buffer_count,type,type==VGL_MEM_VRAM);
+        }
 #ifdef LOG_ERRORS
 		if (vgl_mem_get_type_by_addr(circular_data_pool[i]) == VGL_MEM_VRAM) {
 			vgl_log("%s:%d %s: Circular pool #%d spilled into VRAM. This might negatively impact performance.\n", __FILE__, __LINE__, __func__, i);
@@ -362,6 +386,10 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 	}
 #else
 	circular_data_pool = gpu_alloc_mapped_for_cpu(circular_data_pool_size);
+    if(gangstar_vertex_pool_report) {
+        unsigned type=vgl_mem_get_type_by_addr(circular_data_pool);
+        gangstar_vertex_pool_report(0,circular_data_pool_size,type,type==VGL_MEM_VRAM);
+    }
 #ifdef LOG_ERRORS
 	if (vgl_mem_get_type_by_addr(circular_data_pool) == VGL_MEM_VRAM) {
 		vgl_log("%s:%d %s: Circular pool spilled into VRAM. This might negatively impact performance.\n", __FILE__, __LINE__, __func__);

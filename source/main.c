@@ -1,3 +1,4 @@
+#include "gangstar_district_preload.h"
 #include "gangstar_jni_strings.h"
 #include "gangstar_audio_poll.h"
 /* Gangstar Rio diagnostic loader, derived from the local Vita SO loader. */
@@ -40,6 +41,7 @@ void gangstar_native_startup_frame(void);
 void gangstar_native_reuse_frame(unsigned);
 void gangstar_native_reuse_report(void);
 void gangstar_native_startup_report(unsigned frame);
+void gangstar_native_phase_window_report(void);
 void gangstar_heap_diag_report(unsigned frame);
 void gangstar_audio_report(void);
 void gangstar_audio_output_report(void);
@@ -227,6 +229,7 @@ static int gangstar_main(void) {
         uint64_t step_begin = sceKernelGetProcessTimeWide();
         step(&jni, game_class);
         gangstar_jni_strings_frame_end();
+        gangstar_district_poll();
 
         uint64_t swap_begin = sceKernelGetProcessTimeWide();
         gl_swap();
@@ -307,6 +310,7 @@ static int gangstar_main(void) {
         if (gangstar_perf_add(&performance, swap_begin, swap_end, &sample)) {
             uint64_t report_begin=sceKernelGetProcessTimeWide();
             unsigned fps = gangstar_perf_fps10(&sample);
+            gangstar_native_phase_window_report();
             l_info("RIO_PERF frames=%u fps=%u.%u work_us=%u swap_us=%u worst_us=%u over50ms=%u over100ms=%u outside_us=%llu outside_worst_us=%llu previous_report_us=%llu",
                 (unsigned)sample.frames, fps/10, fps%10,
                 (unsigned)(sample.work/sample.frames), (unsigned)(sample.swap/sample.frames),

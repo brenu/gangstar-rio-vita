@@ -1,3 +1,4 @@
+#include "gangstar_render_sample.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2021      Rinnegatamante
@@ -39,7 +40,60 @@ void gl_preload() {
 #endif
 }
 
+#ifdef GANGSTAR_SELECTIVE_VERTEX_COPY
+#include "gangstar_vertex_scratch.h"
+#include <so_util/so_util.h>
+extern so_module so_mod;
+// Supported ELF: CProcessBufferHeap::setSize stores begin/end at +0/+4;
+// getProcessBufferHeapSize independently subtracts these same two fields.
+unsigned gangstar_vertex_scratch_ranges(uintptr_t *ranges,unsigned capacity) {
+ static uintptr_t (*get_heap)(void);
+ static int resolved,reported_fallback;
+ static uintptr_t reported[4],stack_lo,stack_hi;
+ static SceUID stack_tid=-1;
+ if(capacity<2)return 0;
+ if(!resolved) {
+  resolved=1;
+  uintptr_t address=so_symbol(&so_mod,"_ZN6glitch4core20getProcessBufferHeapEv");
+  if(address && !(address&3)) {
+   const uint32_t *code=(const uint32_t *)address;
+   if(code[0]==0xe59f3010 && code[1]==0xe92d4010 && code[2]==0xe79f0003 && code[3]==0xebf484cf)
+    get_heap=(void *)address;
+  }
+ }
+ uintptr_t heap=get_heap?get_heap():0;
+ if(heap && !(heap&3)) {
+  const uintptr_t *bounds=(const uintptr_t *)heap;
+  uintptr_t begin=bounds[0],end=bounds[1];
+  SceUID tid=sceKernelGetThreadId();
+  if(stack_tid!=tid) {
+   SceKernelThreadInfo info={.size=sizeof(info)};
+   if(sceKernelGetThreadInfo(tid,&info)>=0 && info.stack && info.stackSize>0 &&
+      (uintptr_t)info.stack<=UINTPTR_MAX-(uintptr_t)info.stackSize) {
+    stack_tid=tid;stack_lo=(uintptr_t)info.stack;stack_hi=stack_lo+(uintptr_t)info.stackSize;
+   } else {stack_tid=-1;stack_lo=stack_hi=0;}
+  }
+  if(begin && end>begin && end-begin<=64u*1024*1024 && !(begin&3) && !(end&3) && stack_hi>stack_lo) {
+   ranges[0]=begin;ranges[1]=end;ranges[2]=stack_lo;ranges[3]=stack_hi;
+   if(memcmp(reported,ranges,sizeof(reported))) {
+    memcpy(reported,ranges,sizeof(reported));
+    l_info("RIO_VERTEX_SCRATCH begin=%p end=%p bytes=%u stack_begin=%p stack_end=%p",(void *)begin,(void *)end,(unsigned)(end-begin),(void *)stack_lo,(void *)stack_hi);
+   }
+   return 2;
+  }
+ }
+ if(!reported_fallback) {reported_fallback=1;l_info("RIO_VERTEX_SCRATCH unavailable=1 fallback=copy_all");}
+ return 0;
+}
+
+#endif
+
 static int graphics_ready;
+
+/* Called only at initialization; preserve exact placement evidence in quiet builds. */
+void gangstar_vertex_pool_report(unsigned index,unsigned bytes,unsigned type,unsigned vram) {
+    l_info("RIO_VERTEX_POOL index=%u bytes=%u memory_type=%u vram=%u",index,bytes,type,vram);
+}
 
 void gl_init() {
     if (graphics_ready) return;
@@ -51,19 +105,31 @@ void gl_init() {
     // budget. Use bounded pools alongside the shared libc/game heap.
     // In this pinned vitaGL revision the return value reports resolution
     // fallback, NOT initialization success (GL_FALSE is normal at 960x544).
+    unsigned ram_mib=16,physical_mib=8;
+#ifdef GANGSTAR_VERTEX_CPU_POOLS
+    // The three rotating buffers total 32 MiB and are allocated in whole
+    // chunks. A 16/8 MiB layout cannot hold them all without VRAM spill.
+    // Reserve another 8 MiB in each CPU pool only with startup headroom.
+    if(before.size_user>=32u*1024*1024 && before.size_phycont>=24u*1024*1024) {
+        ram_mib=24;physical_mib=16;
+    }
+#endif
     GLboolean fallback = vglInitWithCustomSizes(0, 960, 544,
-        16 * 1024 * 1024, 96 * 1024 * 1024, 8 * 1024 * 1024, 0, SCE_GXM_MULTISAMPLE_NONE);
+        ram_mib * 1024 * 1024, 96 * 1024 * 1024, physical_mib * 1024 * 1024, 0, SCE_GXM_MULTISAMPLE_NONE);
     graphics_ready = 1;
     SceKernelFreeMemorySizeInfo after = {.size = sizeof(after)};
     sceKernelGetFreeMemorySize(&after);
-    l_success("VitaGL init returned: resolution fallback=%d; pools RAM=16 CDRAM=96 physical=8 MiB",
-              (int)fallback);
+    l_success("VitaGL init returned: resolution fallback=%d; pools RAM=%u CDRAM=96 physical=%u MiB",
+              (int)fallback,ram_mib,physical_mib);
     l_info("After vitaGL: free user=%u CDRAM=%u physical=%u bytes",
             after.size_user, after.size_cdram, after.size_phycont);
 }
 
 void gl_swap() {
     vglSwapBuffers(GL_FALSE);
+#ifdef GANGSTAR_SELECTIVE_VERTEX_COPY
+    gangstar_vertex_scratch_frame_end();
+#endif
 }
 
 void gl_shutdown(void) {
@@ -352,9 +418,11 @@ void glVertexAttribPointer_soloader(GLuint index, GLint size, GLenum type, GLboo
 
 // On-demand, one-frame evidence. Retain only observed API inputs, never change
 // native uniforms or vertex data to manufacture an apparently correct HUD.
-#ifdef GANGSTAR_GRAPHICS_DIAGNOSTICS
+#if defined(GANGSTAR_GRAPHICS_DIAGNOSTICS) || defined(GANGSTAR_VERTEX_TRACE)
 #include <so_util/so_util.h>
 extern so_module so_mod;
+#include "gangstar_vertex_watch.h"
+static RioVertexWatch hud_vertex_watch;
 #define HUD_UNIFORMS 2048
 struct HudUniform { GLint location; GLuint program; char name[80]; GLfloat value[16]; int values, count, transpose, occupied; };
 static struct HudUniform hud_uniforms[HUD_UNIFORMS];
@@ -383,7 +451,11 @@ GLint glGetUniformLocation_soloader(GLuint program, const GLchar *name) {
     }
     return location;
 }
+static FILE *hud_trace;
 static void hud_values(GLint location, int count, int transpose, const GLfloat *value, int values) {
+    // Value capture is on demand. Native uniform uploads must stay cheap
+    // during ordinary gameplay, even if the diagnostic name table is full.
+    if (!hud_trace) return;
     struct HudUniform *entry = hud_uniform(location, 0);
     if (entry && value && count > 0) {
         entry->count = count; entry->transpose = transpose; entry->values = values;
@@ -392,25 +464,38 @@ static void hud_values(GLint location, int count, int transpose, const GLfloat *
 }
 void glUniformMatrix4fv_soloader(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
     hud_values(location, count, transpose, value, 16);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_MATRIX,count>0?(unsigned)count:0);
     glUniformMatrix4fv(location, count, transpose, value);
+    gangstar_render_end(RIO_RENDER_MATRIX,began);
 }
 void glUniform4fv_soloader(GLint location, GLsizei count, const GLfloat *value) {
     hud_values(location, count, 0, value, 4);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_UNIFORM4,count>0?(unsigned)count:0);
     glUniform4fv(location, count, value);
+    gangstar_render_end(RIO_RENDER_UNIFORM4,began);
 }
 void glUniform1i_soloader(GLint location, GLint value) {
     GLfloat input = value; hud_values(location, 1, 0, &input, 1);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_UNIFORM1,1);
     glUniform1i(location, value);
+    gangstar_render_end(RIO_RENDER_UNIFORM1,began);
 }
 extern void vglDebugProgramState(GLuint program, void *output);
 extern void vglSetDebugDrawOutput(void *output);
-static FILE *hud_trace;
 static unsigned hud_poll, hud_draws;
 static GLuint hud_dumped[32];
 static unsigned hud_dumped_count;
 void gangstar_hud_trace_poll(void) {
     if (hud_trace) {
+        SceKernelMemBlockInfo info={.size=sizeof(info)};
+        int valid=hud_vertex_watch.begin &&
+            sceKernelGetMemBlockInfoByAddr((void *)hud_vertex_watch.begin,&info)>=0 &&
+            (uintptr_t)info.mappedBase==hud_vertex_watch.begin &&
+            info.mappedSize==hud_vertex_watch.end-hud_vertex_watch.begin;
+        rio_vertex_watch_report(&hud_vertex_watch,hud_trace,valid);
         fclose(hud_trace); hud_trace = NULL;
+        FILE *done=fopen(DATA_PATH "hud-trace.done","wb");
+        if(done){fprintf(done,"draws=%u\n",hud_draws);fclose(done);}
         l_info("Gangstar HUD trace completed: draws=%u", hud_draws);
         return;
     }
@@ -420,6 +505,17 @@ void gangstar_hud_trace_poll(void) {
     fclose(request); remove(DATA_PATH "hud-trace.request");
     hud_trace = fopen(DATA_PATH "hud-trace.log", "wb");
     hud_draws = 0; hud_dumped_count = 0;
+    // Only re-read samples inside the persistent newlib heap, never freed
+    // standalone memblocks or arbitrary GL pointers. Revalidate at frame end.
+    hud_vertex_watch.begin=hud_vertex_watch.end=0;
+    hud_vertex_watch.count=hud_vertex_watch.dropped=0;
+    void *probe=malloc(1);SceKernelMemBlockInfo info={.size=sizeof(info)};
+    if(probe && sceKernelGetMemBlockInfoByAddr(probe,&info)>=0 && info.mappedBase &&
+       info.mappedSize<=UINTPTR_MAX-(uintptr_t)info.mappedBase) {
+        hud_vertex_watch.begin=(uintptr_t)info.mappedBase;
+        hud_vertex_watch.end=hud_vertex_watch.begin+info.mappedSize;
+    }
+    free(probe);
     sceIoMkdir(DATA_PATH "hud-textures", 0777);
 }
 static void hud_trace_draw(GLenum mode, GLint first, GLsizei count, GLenum index_type, const void *indices) {
@@ -455,7 +551,13 @@ static void hud_trace_draw(GLenum mode, GLint first, GLsizei count, GLenum index
                 sceGxmTextureGetFormat(descriptor), sceGxmTextureGetType(descriptor), vglGetTexDataPointer(GL_TEXTURE_2D));
             fprintf(hud_trace, "(min=%u mag=%u mipfilter=%u levels=%u lod=%u)", sceGxmTextureGetMinFilter(descriptor), sceGxmTextureGetMagFilter(descriptor),
                 sceGxmTextureGetMipFilter(descriptor), sceGxmTextureGetMipmapCount(descriptor), sceGxmTextureGetLodBias(descriptor));
-            if (vglGetTexDataPointer(GL_TEXTURE_2D) && sceGxmTextureGetFormat(descriptor) == SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR && hud_dumped_count < 32) {
+            if (
+#ifndef GANGSTAR_VERTEX_TRACE
+                1 &&
+#else
+                0 &&
+#endif
+                vglGetTexDataPointer(GL_TEXTURE_2D) && sceGxmTextureGetFormat(descriptor) == SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR && hud_dumped_count < 32) {
                 unsigned seen = 0;
                 for (unsigned k = 0; k < hud_dumped_count; ++k) if (hud_dumped[k] == (GLuint)texture) seen = 1;
                 if (!seen) {
@@ -478,7 +580,7 @@ static void hud_trace_draw(GLenum mode, GLint first, GLsizei count, GLenum index
     }
     if (program <= 0) return;
     vglDebugProgramState(program, hud_trace);
-    const char *names[] = {"Vertex", "Position", "TexCoord0", "texcoord0", "Texcoord0", "Color0"};
+    const char *names[] = {"Vertex", "Position", "TexCoord0", "texcoord0", "Texcoord0", "texcoord1", "TexCoord1", "Color0", "Color", "Normal", "Binormal", "Tangent"};
     for (unsigned n = 0; n < sizeof(names)/sizeof(names[0]); ++n) {
         GLint location = glGetAttribLocation(program, names[n]);
         if (location < 0) continue;
@@ -504,6 +606,7 @@ static void hud_trace_draw(GLenum mode, GLint first, GLsizei count, GLenum index
                 }
                 fprintf(hud_trace, " [%u:", index);
                 const uint8_t *data = (const uint8_t *)pointer + index * stride;
+                rio_vertex_watch_add(&hud_vertex_watch,names[n],hud_draws,index,data,(unsigned)(size*component));
                 for (int j = 0; j < size; ++j) {
                     float value;
                     if (type == GL_FLOAT) memcpy(&value, data + j * 4, 4);
@@ -518,35 +621,71 @@ static void hud_trace_draw(GLenum mode, GLint first, GLsizei count, GLenum index
     }
 }
 void glDrawArrays_soloader(GLenum mode, GLint first, GLsizei count) {
-    hud_trace_draw(mode, first, count, 0, NULL); glDrawArrays(mode, first, count);
+    hud_trace_draw(mode, first, count, 0, NULL);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_ARRAYS,count>0?(unsigned)count:0);
+    glDrawArrays(mode, first, count);
+    gangstar_render_end(RIO_RENDER_ARRAYS,began);
+#ifdef GANGSTAR_DIRECT_DRAW_SYNC
+    glFinish();
+#endif
 }
 void glDrawElements_soloader(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     hud_trace_draw(mode, 0, count, type, indices);
     GLint program = 0;
     if (hud_trace) glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-    if (hud_trace && program > 0 && program <= 19) vglSetDebugDrawOutput(hud_trace);
+    if (hud_trace && program > 0) vglSetDebugDrawOutput(hud_trace);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_ELEMENTS,count>0?(unsigned)count:0);
     glDrawElements(mode, count, type, indices);
+    gangstar_render_end(RIO_RENDER_ELEMENTS,began);
     vglSetDebugDrawOutput(NULL);
+#ifdef GANGSTAR_DIRECT_DRAW_SYNC
+    glFinish();
+#endif
 }
 #else
 GLint glGetUniformLocation_soloader(GLuint program, const GLchar *name) {
-    return glGetUniformLocation(program, name);
+    uint64_t began=gangstar_render_begin(RIO_RENDER_LOCATION,1);
+    GLint result=glGetUniformLocation(program,name);gangstar_render_end(RIO_RENDER_LOCATION,began);return result;
 }
 void glUniformMatrix4fv_soloader(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+    uint64_t began=gangstar_render_begin(RIO_RENDER_MATRIX,count>0?(unsigned)count:0);
     glUniformMatrix4fv(location, count, transpose, value);
+    gangstar_render_end(RIO_RENDER_MATRIX,began);
 }
 void glUniform4fv_soloader(GLint location, GLsizei count, const GLfloat *value) {
+    uint64_t began=gangstar_render_begin(RIO_RENDER_UNIFORM4,count>0?(unsigned)count:0);
     glUniform4fv(location, count, value);
+    gangstar_render_end(RIO_RENDER_UNIFORM4,began);
 }
 void glUniform1i_soloader(GLint location, GLint value) {
+    uint64_t began=gangstar_render_begin(RIO_RENDER_UNIFORM1,1);
     glUniform1i(location, value);
+    gangstar_render_end(RIO_RENDER_UNIFORM1,began);
 }
 void gangstar_hud_trace_poll(void) {}
 void glDrawArrays_soloader(GLenum mode, GLint first, GLsizei count) {
+    uint64_t began=gangstar_render_begin(RIO_RENDER_ARRAYS,count>0?(unsigned)count:0);
     glDrawArrays(mode, first, count);
+    gangstar_render_end(RIO_RENDER_ARRAYS,began);
+#ifdef GANGSTAR_DIRECT_DRAW_SYNC
+    // Diagnostic: prevent this thread reusing client vertices after returning
+    // while the GPU is still consuming the submitted draw.
+    uint64_t sync_began=gangstar_render_begin(RIO_RENDER_SYNC,1);
+    glFinish();
+    gangstar_render_end(RIO_RENDER_SYNC,sync_began);
+#endif
 }
 void glDrawElements_soloader(GLenum mode, GLsizei count, GLenum type, const void *indices) {
+    uint64_t began=gangstar_render_begin(RIO_RENDER_ELEMENTS,count>0?(unsigned)count:0);
     glDrawElements(mode, count, type, indices);
+    gangstar_render_end(RIO_RENDER_ELEMENTS,began);
+#ifdef GANGSTAR_DIRECT_DRAW_SYNC
+    // Diagnostic: prevent this thread reusing client vertices after returning
+    // while the GPU is still consuming the submitted draw.
+    uint64_t sync_began=gangstar_render_begin(RIO_RENDER_SYNC,1);
+    glFinish();
+    gangstar_render_end(RIO_RENDER_SYNC,sync_began);
+#endif
 }
 #endif
 

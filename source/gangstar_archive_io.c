@@ -97,6 +97,7 @@ static void trace_read(struct BackingContext *context, int archive, off_t offset
 static RioArchiveCache cache;
 static atomic_int enabled;
 static atomic_uint active_demand;
+int gangstar_archive_demand_busy(void) {return atomic_load(&active_demand)!=0;}
 static void prefetch_init(void);
 static void prefetch_enqueue(int archive, uint64_t offset);
 static const uint64_t archive_sizes[] = {UINT64_C(2119380688), UINT64_C(3709754)};

@@ -11,7 +11,7 @@ static inline int rio_startup_trampoline(uint32_t out[6], uint32_t address,
         if ((word & 0xffff0000) == 0xe59f0000 && rd != 15) {
             out[i] = (word & 0xfffff000) | 8;
         } else if (((word & 0xffff8000) == 0xe92d0000) ||
-            (word == 0xed2d8b02 || word == 0xe2514000 || word == 0xe2513000 || word == 0xe3a02003 || word == 0xe3530000) ||
+            (word == 0xe3073b54 || word == 0xe3403001 || word == 0xed2d8b02 || word == 0xed2d8b04 || word == 0xed2d8b06 || word == 0xe2514000 || word == 0xe2513000 || word == 0xe3a02003 || word == 0xe3500000 || word == 0xe3510000 || word == 0xe3530000 || word == 0xe1530001 || word == 0xe1c022f0 || word == 0xe2801f83) ||
             ((word & 0xffff0ff0) == 0xe1a00000 && rd != 15 && (word & 15) != 15) ||
             ((word & 0xffff0fff) == 0xe3a00000 && rd != 15) ||
             ((word & 0xfffff000) == 0xe24dd000) ||

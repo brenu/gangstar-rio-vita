@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <pthread.h>
 static unsigned char header[128];
 static unsigned reads, read_bytes;
 static int corrupt, fail_tail, interrupt_once, original_mode;
@@ -28,6 +29,16 @@ ssize_t gangstar_archive_pread(int fd, void *data, size_t length, off_t offset) 
         for (size_t i = 0; i < length; ++i) ((unsigned char *)data)[i] = (relative + i) & 255;
     }
     read_bytes += length; return length;
+}
+static void *cached_reader(void *unused) {
+    (void)unused;
+    for(unsigned i=0;i<32;++i) {
+        uint32_t size=0;
+        const unsigned char *p=gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&size);
+        assert(p && size==2796344 && !memcmp(p,header,128) && p[size-1]==((size-1)&255));
+        free((void *)p);
+    }
+    return NULL;
 }
 int main(int argc, char **argv) {
     (void)argv;
@@ -97,6 +108,16 @@ int main(int argc, char **argv) {
     }
     assert(originals==4 && preloaded==243 && source_budget==52725304);
     assert(source_budget < 64u*1024u*1024u);
+    assert(sizeof(rio_lod_supplemental_sources)/sizeof(*rio_lod_supplemental_sources)==4);
+    for(unsigned i=0;i<4;++i) {
+        const char *name=rio_lod_supplemental_sources[i];
+        assert(rio_lod_original_source(name) && !rio_lod_preload_source(name));
+        unsigned matches=0;
+        for(unsigned j=0;j<sizeof(rio_world_texture_names)/sizeof(*rio_world_texture_names);++j)
+            matches+=!strcmp(name,rio_world_texture_names[j]);
+        assert(matches==1);
+    }
+    assert(source_budget+4ull*2796344 < 64u*1024u*1024u);
     assert(!rio_lod_preload_source("copacabana_lightmap02.tga"));
     const char *route_maps[]={"rich_00_lightmap00.tga","rich_01_lightmap00.tga",
         "sugarloaf_lightmap00.tga","mountain_lightmap00.tga"};
@@ -110,10 +131,8 @@ int main(int argc, char **argv) {
 #endif
     if (argc>1) {
         original_mode=1;uint32_t length=0;interrupt_once=1;
-        unsigned initial_reads=reads;
-        assert(!gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length));
-        assert(reads==initial_reads); // gameplay miss performs no full DDS read
-        gangstar_texture_source_preloading(1);
+        // A gameplay miss reads once into an independently owned cache entry.
+
         const unsigned char *raw=gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
         assert(raw && length==2796344 && !memcmp(raw,header,128));
         for(unsigned i=128;i<length;++i) assert(raw[i]==(i&255));
@@ -138,8 +157,29 @@ int main(int argc, char **argv) {
         free((void *)again); free((void *)route);
         gangstar_texture_source_preloading(0);
         before=reads;
-        assert(!gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length));
+        const void *demand=gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length);
+        assert(demand && reads>before);free((void *)demand);
+        RioTextureSourcePriority wanted={12000100,2796344,1,4};
+        gangstar_texture_source_priorities(&wanted,1);
+        assert(gangstar_texture_source_background(12000100,2796344,"copacabana_lightmap00.tga"));
+        before=reads;
+        const void *prefetched=gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length);
+        assert(prefetched && reads==before);free((void *)prefetched);
+        pthread_t readers[2];
+        for(unsigned i=0;i<2;++i)assert(!pthread_create(&readers[i],NULL,cached_reader,NULL));
+        for(unsigned i=0;i<32;++i)gangstar_texture_source_priorities(&wanted,1);
+        for(unsigned i=0;i<2;++i)assert(!pthread_join(readers[i],NULL));
         assert(reads==before);
+        // Fill spare space, then confirm misses do no I/O and old assets survive.
+        for(unsigned i=4;i<23;++i) {
+            void *fill=(void *)gangstar_texture_original_get(0,100+4000000ull*i,2796344,"rich_00_lightmap00.tga",&length);
+            assert(fill);free(fill);
+        }
+        before=reads;
+        assert(!gangstar_texture_original_get(0,100+4000000ull*23,2796344,"rich_00_lightmap00.tga",&length));
+        assert(reads==before);
+        void *retained=(void *)gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
+        assert(retained && reads==before);free(retained);
         puts("Original lightmap readers: byte identity, independent ownership, exact families, interrupted/short reads and failed-fill fallback passed");
         return 0;
     }

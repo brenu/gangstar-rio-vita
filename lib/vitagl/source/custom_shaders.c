@@ -24,6 +24,7 @@
 #define _GNU_SOURCE
 #include <string.h>
 #include "shared.h"
+#include "utils/index_max.h"
 #include "utils/glsl_utils.h"
 #include "utils/shacccg_paramquery.h"
 #if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
@@ -42,6 +43,16 @@ char vgl_file_cache_path[256];
 #endif
 
 #define MAX_CUSTOM_SHADERS 2048 // Maximum number of linkable custom shaders
+#ifdef RIO_VERTEX_PATCH_CACHE
+#include "utils/vertex_patch_cache.h"
+static RioVertexPatchCache rio_vertex_patches;
+void vglGetVertexPatchStats(unsigned *hits,unsigned *misses) {
+ THREAD_SAFE()
+ *hits=rio_vertex_patches.hits;*misses=rio_vertex_patches.misses;
+ rio_vertex_patches.hits=rio_vertex_patches.misses=0;
+}
+#endif
+
 #define MAX_CUSTOM_PROGRAMS 1024 // Maximum number of linkable custom programs
 
 #define set_default_attrib_binding() \
@@ -375,6 +386,166 @@ typedef struct {
 static shader shaders[MAX_CUSTOM_SHADERS];
 static program progs[MAX_CUSTOM_PROGRAMS];
 
+#ifdef RIO_SELECTIVE_VERTEX_COPY
+static unsigned rio_snapshot_draws,rio_direct_draws;
+static uint64_t rio_index_scan_calls[2],rio_index_scan_elements[2];
+void vglGetIndexScanStats(uint64_t calls[2],uint64_t elements[2]) {
+ THREAD_SAFE()
+ for(unsigned i=0;i<2;++i){calls[i]=rio_index_scan_calls[i];elements[i]=rio_index_scan_elements[i];rio_index_scan_calls[i]=rio_index_scan_elements[i]=0;}
+}
+
+static uint64_t rio_snapshot_bytes;
+void vglGetSelectiveVertexStats(unsigned *copied,unsigned *direct,uint64_t *bytes) {
+ THREAD_SAFE()
+ *copied=rio_snapshot_draws;*direct=rio_direct_draws;*bytes=rio_snapshot_bytes;
+ rio_snapshot_draws=rio_direct_draws=0;rio_snapshot_bytes=0;
+}
+extern unsigned gangstar_vertex_scratch_ranges(uintptr_t *,unsigned) __attribute__((weak));
+extern int gangstar_vertex_extra_range(uintptr_t,uintptr_t *) __attribute__((weak));
+/* Small client-memory draws include the engine's reusable UI/cloud/water
+ * arrays, which need not belong to the process heap. Bound total fetched
+ * bytes, not index count: sparse indices can address a very large array. */
+static GLboolean rio_has_client_stream(program *p) {
+ for(unsigned i=0;i<p->attr_num;++i) {
+  unsigned a=p->attr_map[i];
+  if((cur_vao->vertex_attrib_state&(1u<<a)) && !cur_vao->vertex_attrib_vbo[a])return GL_TRUE;
+ }
+ return GL_FALSE;
+}
+typedef struct {uintptr_t begin,end;uint32_t attributes;} RioVertexCopySpan;
+static GLboolean rio_vertex_stream_extent(SceGxmVertexAttribute *attribute,SceGxmVertexStream *stream,
+ const void *pointer,uint32_t first,uint32_t vertices,uintptr_t *begin,uintptr_t *end) {
+ static const unsigned widths[]={1,1,2,2,1,1,2,2,2,4};
+ unsigned f=attribute->format,c=attribute->componentCount;size_t stride=stream->stride;
+ if(!vertices || f>=10 || !c || c>4 || !stride || !pointer ||
+    vertices>SIZE_MAX/stride || first>SIZE_MAX/stride)return GL_FALSE;
+ size_t tail=(size_t)c*widths[f];
+ if(attribute->offset>SIZE_MAX-tail)return GL_FALSE;
+ tail+=attribute->offset;
+ size_t bytes=(size_t)(vertices-1)*stride,offset=(size_t)first*stride;
+ if(tail>SIZE_MAX-bytes || (uintptr_t)pointer>UINTPTR_MAX-offset)return GL_FALSE;
+ bytes+=tail;*begin=(uintptr_t)pointer+offset;
+ if(bytes>UINTPTR_MAX-*begin)return GL_FALSE;
+ *end=*begin+bytes;return GL_TRUE;
+}
+static void rio_vertex_merge_span(RioVertexCopySpan *spans,unsigned *used,
+ uintptr_t begin,uintptr_t end,uint32_t attributes) {
+ for(unsigned j=0;j<*used;) {
+  if(begin<=spans[j].end && spans[j].begin<=end) {
+   if(spans[j].begin<begin)begin=spans[j].begin;
+   if(spans[j].end>end)end=spans[j].end;
+   attributes|=spans[j].attributes;spans[j]=spans[--*used];j=0;
+  } else ++j;
+ }
+ spans[(*used)++]=(RioVertexCopySpan){begin,end,attributes};
+}
+static GLboolean rio_small_client_draw(program *p,SceGxmVertexAttribute *attributes,
+ SceGxmVertexStream *streams,void **ptrs,uint32_t first,uint32_t vertices) {
+ if(!vertices || p->attr_num>VERTEX_ATTRIBS_NUM || p->attr_num>32)return GL_FALSE;
+ RioVertexCopySpan spans[VERTEX_ATTRIBS_NUM];unsigned used=0;
+ for(unsigned i=0;i<p->attr_num;++i) {
+  unsigned a=p->attr_map[i];
+  if(!(cur_vao->vertex_attrib_state&(1u<<a)) || cur_vao->vertex_attrib_vbo[a])continue;
+  uintptr_t begin,end;
+  if(!rio_vertex_stream_extent(&attributes[i],&streams[i],ptrs[i],first,vertices,&begin,&end))return GL_FALSE;
+  rio_vertex_merge_span(spans,&used,begin,end,0);
+ }
+ size_t total=0;
+ for(unsigned j=0;j<used;++j) {
+  size_t bytes=spans[j].end-spans[j].begin;
+  if(bytes>65536u-total)return GL_FALSE;
+  total+=bytes;
+ }
+ return used?GL_TRUE:GL_FALSE;
+}
+static GLboolean rio_needs_vertex_snapshot(program *p,void **ptrs,uintptr_t ranges[4],unsigned *nr) {
+ *nr=0;
+ // Unknown native metadata preserves every stream rather than guessing.
+ if(!gangstar_vertex_scratch_ranges || !gangstar_vertex_extra_range)return GL_TRUE;
+ uintptr_t ignored;
+ if(gangstar_vertex_extra_range(0,&ignored)<0)return GL_TRUE;
+ unsigned count=gangstar_vertex_scratch_ranges(ranges,2);
+ if(!count || count>2)return GL_TRUE;
+ for(unsigned j=0;j<count;++j)if(!ranges[j*2] || ranges[j*2+1]<=ranges[j*2])return GL_TRUE;
+ *nr=count;
+ for(unsigned i=0;i<p->attr_num;++i) {
+  unsigned a=p->attr_map[i];
+  if(!(cur_vao->vertex_attrib_state & (1u<<a)))continue;
+  for(unsigned j=0;j<count;++j)
+   if((uintptr_t)ptrs[i]>=ranges[j*2] && (uintptr_t)ptrs[i]<ranges[j*2+1])return GL_TRUE;
+  int extra=gangstar_vertex_extra_range((uintptr_t)ptrs[i],&ignored);
+  if(extra<0){*nr=0;return GL_TRUE;}
+  if(extra>0)return GL_TRUE;
+ }
+ return GL_FALSE;
+}
+/* Preserve streams from the native thread-local temporary heap. Their
+ * storage is released/reused between meshes before GXM consumes the draw.
+ * Stable streams remain direct. Unavailable heap metadata copies everything. */
+extern void gangstar_vertex_snapshot_failure(unsigned,const void *,size_t,uintptr_t,unsigned,unsigned) __attribute__((weak));
+static GLboolean rio_snapshot_streams_impl(program *p,SceGxmVertexAttribute *attributes,SceGxmVertexStream *streams,
+ void **ptrs,uint32_t first,uint32_t vertices,const uintptr_t ranges[4],unsigned nr) {
+ if(!vertices || p->attr_num>VERTEX_ATTRIBS_NUM || p->attr_num>32)return GL_FALSE;
+ ++rio_snapshot_draws;
+ RioVertexCopySpan spans[VERTEX_ATTRIBS_NUM];unsigned used=0;
+ for(unsigned i=0;i<p->attr_num;++i) {
+  unsigned a=p->attr_map[i];
+  if(!(cur_vao->vertex_attrib_state&(1u<<a)) || cur_vao->vertex_attrib_vbo[a])continue;
+  uintptr_t begin,end;
+  if(!rio_vertex_stream_extent(&attributes[i],&streams[i],ptrs[i],first,vertices,&begin,&end))return GL_FALSE;
+  if(nr) {
+   uintptr_t limit=0;
+   for(unsigned j=0;j<nr;++j)
+    if(begin>=ranges[j*2] && begin<ranges[j*2+1]) {limit=ranges[j*2+1];break;}
+   if(!limit && gangstar_vertex_extra_range) {
+    int extra=gangstar_vertex_extra_range(begin,&limit);
+    if(extra<0)limit=UINTPTR_MAX;
+    else if(!extra)limit=0;
+   }
+   if(!limit) {
+    for(unsigned j=0;j<nr;++j)
+     if((uintptr_t)ptrs[i]>=ranges[j*2] && (uintptr_t)ptrs[i]<ranges[j*2+1])return GL_FALSE;
+    continue;
+   }
+   if(end>limit) {
+    if(gangstar_vertex_snapshot_failure)gangstar_vertex_snapshot_failure(1,(void *)begin,end-begin,limit,streams[i].stride,vertices);
+    return GL_FALSE;
+   }
+  }
+  rio_vertex_merge_span(spans,&used,begin,end,1u<<i);
+ }
+ for(unsigned j=0;j<used;++j) {
+  size_t bytes=spans[j].end-spans[j].begin;
+  // Preserve each field's original alignment, even when the first field
+  // in the union is a byte attribute before a naturally aligned float.
+  size_t prefix=spans[j].begin&15u;
+  if(bytes>SIZE_MAX-prefix)return GL_FALSE;
+  uint8_t *snapshot=gpu_alloc_mapped_temp(bytes+prefix);
+  if(!snapshot) {
+   if(gangstar_vertex_snapshot_failure)gangstar_vertex_snapshot_failure(2,(void *)spans[j].begin,bytes,0,0,vertices);
+   return GL_FALSE;
+  }
+  snapshot+=prefix;
+  vgl_fast_memcpy(snapshot,(const void *)spans[j].begin,bytes);rio_snapshot_bytes+=bytes;
+  for(unsigned i=0;i<p->attr_num;++i)if(spans[j].attributes&(1u<<i)) {
+   uintptr_t source=(uintptr_t)ptrs[i]+(size_t)first*streams[i].stride;
+   ptrs[i]=snapshot+(source-spans[j].begin);
+  }
+ }
+ return GL_TRUE;
+}
+extern uint64_t gangstar_vertex_copy_begin(void) __attribute__((weak));
+extern void gangstar_vertex_copy_end(uint64_t) __attribute__((weak));
+static GLboolean rio_snapshot_streams(program *p,SceGxmVertexAttribute *attributes,SceGxmVertexStream *streams,
+ void **ptrs,uint32_t first,uint32_t vertices,const uintptr_t ranges[4],unsigned nr) {
+ uint64_t began=gangstar_vertex_copy_begin?gangstar_vertex_copy_begin():0;
+ GLboolean result=rio_snapshot_streams_impl(p,attributes,streams,ptrs,first,vertices,ranges,nr);
+ if(began && gangstar_vertex_copy_end)gangstar_vertex_copy_end(began);
+ return result;
+}
+
+#endif
+
 #ifdef HAVE_SHARK_LOG
 static char *shark_log = NULL;
 #endif
@@ -671,6 +842,9 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
 }
 
 void reset_custom_shaders(void) {
+#ifdef RIO_VERTEX_PATCH_CACHE
+    memset(&rio_vertex_patches,0,sizeof(rio_vertex_patches));
+#endif
 	// Init custom shaders
 	for (int i = 0; i < MAX_CUSTOM_SHADERS; i++) {
 		shaders[i].valid = GL_FALSE;
@@ -1099,6 +1273,16 @@ GLboolean _glDrawArrays_CustomShadersIMPL(GLint first, GLsizei count, GLboolean 
 #endif
 #else // DRAW_SPEEDHACK
 	handle_speedhack_attrib();
+#ifdef RIO_SELECTIVE_VERTEX_COPY
+ uintptr_t rio_ranges[4];unsigned rio_nr;
+ GLboolean rio_small=!instanced && count>0 && rio_small_client_draw(p,attributes,streams,ptrs,(uint32_t)first,(uint32_t)count);
+ GLboolean rio_preserve=GL_FALSE;
+ if(rio_small)rio_nr=0;
+ else rio_preserve=rio_needs_vertex_snapshot(p,ptrs,rio_ranges,&rio_nr);
+ if(!instanced && (rio_small || rio_preserve)) {
+  if(first<0 || count<=0 || !rio_snapshot_streams(p,attributes,streams,ptrs,(uint32_t)first,(uint32_t)count,rio_ranges,rio_nr))return GL_FALSE;
+ } else ++rio_direct_draws;
+#endif
 #endif
 
 #ifndef INDICES_SPEEDHACK
@@ -1154,14 +1338,37 @@ GLboolean _glDrawArrays_CustomShadersIMPL(GLint first, GLsizei count, GLboolean 
 	return GL_TRUE;
 }
 
+extern uint64_t gangstar_render_stage_clock(void) __attribute__((weak));
+extern void gangstar_render_stage_end(unsigned,uint64_t) __attribute__((weak));
 static FILE *gangstar_stream_trace;
 void vglSetDebugDrawOutput(void *output) { gangstar_stream_trace = output; }
 
-GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, uint32_t top_idx, uint32_t base_idx, SceGxmIndexSource index_type) {
+#ifdef RIO_VERTEX_PATCH_CACHE
+#include "utils/vertex_patch_cache.h"
+static void rio_patch_vertex(program *p,SceGxmVertexAttribute *attributes,SceGxmVertexStream *streams) {
+ size_t na=p->attr_num*sizeof(*attributes),ns=p->attr_num*sizeof(*streams);
+ if(rio_vertex_patch_match(&rio_vertex_patches,cur_program,(uintptr_t)gxm_shader_patcher,
+  (uintptr_t)p->vshader->id,(uintptr_t)p->vshader->prog,attributes,na,streams,ns,(uintptr_t)p->vprog))return;
+ int error=sceGxmShaderPatcherCreateVertexProgram(gxm_shader_patcher,p->vshader->id,
+  attributes,p->attr_num,streams,p->attr_num,&p->vprog);
+ if(!error)rio_vertex_patch_store(&rio_vertex_patches,cur_program,(uintptr_t)gxm_shader_patcher,
+  (uintptr_t)p->vshader->id,(uintptr_t)p->vshader->prog,attributes,na,streams,ns,(uintptr_t)p->vprog);
+ else {
+  rio_vertex_patch_invalidate(&rio_vertex_patches,cur_program);
+#ifdef LOG_ERRORS
+  vgl_log("Vertex shader patching failed (%s) on shader 0x%X with %d attributes and streams.\n",get_gxm_error_literal(error),p->vshader->id,p->attr_num);
+#endif
+ }
+}
+#endif
+GLboolean _glDrawElements_CustomShadersRangeIMPL(uint16_t *idx_buf, GLsizei count, uint32_t top_idx, uint32_t base_idx, SceGxmIndexSource index_type, uint32_t first_vertex) {
 #ifdef HAVE_PROFILING
 	uint32_t draw_start = sceKernelGetProcessTimeLow();
 #endif
 	program *p = &progs[cur_program - 1];
+	SceGxmIndexSource rio_input_index_type=index_type;
+	uint64_t rio_scan = 0, rio_copy = 0;
+	uint64_t rio_detail = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 
 	// Check if a blend info rebuild is required and upload fragment program
 	setup_frag_program();
@@ -1216,6 +1423,8 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 #endif
 	}
 
+	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(4, rio_detail);
+	rio_detail = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 	// Uploading vertex textures on relative texture units
 	for (int i = 0; i < p->max_vert_texunit_idx; i++) {
 #ifndef SAMPLERS_SPEEDHACK
@@ -1296,6 +1505,8 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 		is_full_vbo = GL_FALSE;
 #endif
 
+	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(8, rio_detail);
+	rio_scan = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 	// Detecting highest index value
 	if (!is_full_vbo && !top_idx) {
 		if ((index_type & 1) == 0)
@@ -1318,17 +1529,19 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 		top_idx += base_idx + 1;
 	}
 
+	if (rio_scan && gangstar_render_stage_end) gangstar_render_stage_end(9, rio_scan);
+	rio_copy = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 #ifdef STRICT_DRAW_COMPLIANCE
 	// Gathering real attribute data pointers
 	if (is_packed[0]) {
 #ifdef SAFER_DRAW_SPEEDHACK
 		if (top_idx * streams[0].stride > SAFE_DRAW_SIZE_THRESHOLD) {
-			ptrs[0] = (void *)cur_vao->vertex_attrib_offsets[p->attr_map[0]];
+			ptrs[0] = ((uint8_t *)(uintptr_t)cur_vao->vertex_attrib_offsets[p->attr_map[0]] + first_vertex * streams[0].stride);
 		} else
 #endif
 		{
 			ptrs[0] = gpu_alloc_mapped_temp(top_idx * streams[0].stride);
-			vgl_fast_memcpy(ptrs[0], (void *)cur_vao->vertex_attrib_offsets[p->attr_map[0]], top_idx * streams[0].stride);
+			vgl_fast_memcpy(ptrs[0], ((uint8_t *)(uintptr_t)cur_vao->vertex_attrib_offsets[p->attr_map[0]] + first_vertex * streams[0].stride), top_idx * streams[0].stride);
 		}
 	}
 	for (int i = 0; i < p->attr_num; i++) {
@@ -1337,7 +1550,7 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 		if (is_packed[i]) {
 			handle_packed_attrib();
 		} else {
-			handle_unpacked_attrib(0, top_idx);
+			handle_unpacked_attrib(first_vertex, top_idx);
 		}
 	}
 #else
@@ -1354,12 +1567,12 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 		} else {
 #ifdef SAFER_DRAW_SPEEDHACK
 			if (top_idx * streams[0].stride > SAFE_DRAW_SIZE_THRESHOLD) {
-				ptrs[0] = (void *)cur_vao->vertex_attrib_offsets[p->attr_map[0]];
+				ptrs[0] = ((uint8_t *)(uintptr_t)cur_vao->vertex_attrib_offsets[p->attr_map[0]] + first_vertex * streams[0].stride);
 			} else
 #endif
 			{
 				ptrs[0] = gpu_alloc_mapped_temp(top_idx * streams[0].stride);
-				vgl_fast_memcpy(ptrs[0], (void *)cur_vao->vertex_attrib_offsets[p->attr_map[0]], top_idx * streams[0].stride);
+				vgl_fast_memcpy(ptrs[0], ((uint8_t *)(uintptr_t)cur_vao->vertex_attrib_offsets[p->attr_map[0]] + first_vertex * streams[0].stride), top_idx * streams[0].stride);
 			}
 			for (int i = 0; i < p->attr_num; i++) {
 				uint8_t attr_idx = p->attr_map[i];
@@ -1371,14 +1584,41 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 		for (int i = 0; i < p->attr_num; i++) {
 			uint8_t attr_idx = p->attr_map[i];
 			attributes[i].regIndex = p->attr[attr_idx].regIndex;
-			handle_unpacked_attrib(0, top_idx);
+			handle_unpacked_attrib(first_vertex, top_idx);
 		}
 	}
 #endif
 #else // DRAW_SPEEDHACK
 	handle_speedhack_attrib();
+#ifdef RIO_SELECTIVE_VERTEX_COPY
+ uintptr_t rio_ranges[4];unsigned rio_nr;
+ if(!(index_type & 2) && rio_has_client_stream(p)) {
+  rio_scan=gangstar_render_stage_clock?gangstar_render_stage_clock():0;
+  if(!top_idx) {
+   if(count<=0)return GL_FALSE;
+   unsigned format=index_type&1;
+   ++rio_index_scan_calls[format];rio_index_scan_elements[format]+=(unsigned)count;
+   uint32_t highest=format?rio_index_max32((const uint32_t *)idx_buf,(size_t)count):
+       rio_index_max16(idx_buf,(size_t)count);
+   if(highest==UINT32_MAX || base_idx>UINT32_MAX-highest-1)return GL_FALSE;
+   top_idx=highest+base_idx+1;
+  }
+  if(rio_scan && gangstar_render_stage_end)gangstar_render_stage_end(9,rio_scan);
+  GLboolean rio_small=rio_small_client_draw(p,attributes,streams,ptrs,first_vertex,top_idx);
+  GLboolean rio_preserve=GL_FALSE;
+  // Small draws already snapshot every client stream. Avoid querying the
+  // native heap and locking the scratch registry for this same decision.
+  if(!rio_small)rio_preserve=rio_needs_vertex_snapshot(p,ptrs,rio_ranges,&rio_nr);
+  if(rio_small || rio_preserve) {
+   if(rio_small)rio_nr=0;
+   rio_copy=gangstar_render_stage_clock?gangstar_render_stage_clock():0;
+   if(!rio_snapshot_streams(p,attributes,streams,ptrs,first_vertex,top_idx,rio_ranges,rio_nr))return GL_FALSE;
+  } else ++rio_direct_draws;
+ } else ++rio_direct_draws;
+#endif
 #endif
 
+	if (rio_copy && gangstar_render_stage_end) gangstar_render_stage_end(10, rio_copy);
 #ifndef INDICES_SPEEDHACK
 	// Check if highest index is small enough for 16 bit usage and if so, downgrade to 16 bit vertex sources for faster emitted code
 	if (top_idx && top_idx < 0xFFFF) {
@@ -1397,17 +1637,21 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 	}
 #endif
 
-#if defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+#if defined(STRICT_DRAW_COMPLIANCE)
     if (gangstar_stream_trace) {
         for (unsigned a = 0; a < p->attr_num; ++a) {
             unsigned attr_idx = p->attr_map[a];
             const uint8_t *data;
+            unsigned packed=0;
+#ifndef DRAW_SPEEDHACK
+            packed=is_packed[a];
+#endif
             if (cur_vao->vertex_attrib_state & (1u << attr_idx))
-                data = is_packed[a] ? ptrs[0] : ptrs[a];
+                data = packed ? ptrs[0] : ptrs[a];
             else data = (const void *)cur_vao->vertex_attrib_value[attr_idx];
-            fprintf(gangstar_stream_trace, " stream attr=%u packed=%u address=%p offset=%u stride=%u format=%u", attr_idx, is_packed[a], data, attributes[a].offset, streams[a].stride, attributes[a].format);
+            fprintf(gangstar_stream_trace, " stream attr=%u packed=%u address=%p offset=%u stride=%u format=%u", attr_idx, packed, data, attributes[a].offset, streams[a].stride, attributes[a].format);
             for (unsigned v = 0; v < 3 && v < (unsigned)count; ++v) {
-                unsigned index = (index_type & 1) ? ((uint32_t *)idx_buf)[v] : idx_buf[v];
+                unsigned index = (rio_input_index_type & 1) ? ((uint32_t *)idx_buf)[v] : idx_buf[v];
                 const uint8_t *src = data + attributes[a].offset + index * streams[a].stride;
                 fprintf(gangstar_stream_trace, " [%u:", index);
                 for (unsigned c = 0; c < attributes[a].componentCount; ++c) {
@@ -1424,10 +1668,18 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
     }
 #endif
 
+	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(5, rio_detail);
+	rio_detail = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 	// Uploading new vertex program
+#ifdef RIO_VERTEX_PATCH_CACHE
+    rio_patch_vertex(p,attributes,streams);
+#else
 	patch_vertex_program(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog);
+#endif
 	sceGxmSetVertexProgram(gxm_context, p->vprog);
 
+	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(6, rio_detail);
+	rio_detail = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 	// Uploading both fragment and vertex uniforms data
 	upload_uniforms();
 
@@ -1457,12 +1709,38 @@ GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count, ui
 			}
 		}
 	}
+	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(7, rio_detail);
 #ifdef HAVE_PROFILING
 	shaders_draw_profiler_cnt += sceKernelGetProcessTimeLow() - draw_start;
 	shaders_draw_cnt++;
 #endif
 	return GL_TRUE;
 }
+
+GLboolean _glDrawElements_CustomShadersIMPL(uint16_t *idx_buf, GLsizei count,
+ uint32_t top_idx,uint32_t base_idx,SceGxmIndexSource index_type) {
+ return _glDrawElements_CustomShadersRangeIMPL(idx_buf,count,top_idx,base_idx,index_type,0);
+}
+#ifdef RIO_VERTEX_RANGE_COPY
+GLboolean vglRioClientRangeEligible(void) {
+#ifndef DRAW_SPEEDHACK
+ program *p=&progs[cur_program-1];
+ unsigned active=0;
+ for(unsigned i=0;i<p->attr_num;++i) {
+  unsigned a=p->attr_map[i];
+  if(!(cur_vao->vertex_attrib_state & (1u<<a)))continue;
+  /* Mixed VBO/client streams and instanced attributes keep the original path. */
+  if(cur_vao->vertex_attrib_vbo[a] ||
+     (cur_vao->vertex_attrib_divisor & (1u<<a)) ||
+     !cur_vao->vertex_stream_config[a].stride)return GL_FALSE;
+  ++active;
+ }
+ return active!=0;
+#else
+ return GL_FALSE;
+#endif
+}
+#endif
 
 #ifdef ENABLE_LEGACY_PIPELINE
 void _vglDrawObjects_CustomShadersIMPL() {
@@ -1988,9 +2266,13 @@ void glGetProgramBinary(GLuint prog, GLsizei bufSize, GLsizei *length, GLenum *b
 
 void glProgramBinary(GLuint prog, GLenum binaryFormat, const void *binary, GLsizei length) {
 	THREAD_SAFE()
+#ifdef RIO_VERTEX_PATCH_CACHE
+    rio_vertex_patch_invalidate(&rio_vertex_patches,prog);
+#endif
 
 	// Grabbing passed program
 	program *p = &progs[prog - 1];
+
 	
 	// Restoring bound attributes info
 	GLuint *b = (GLuint *)binary;
@@ -2016,6 +2298,9 @@ void glProgramBinary(GLuint prog, GLenum binaryFormat, const void *binary, GLsiz
 
 void glDeleteProgram(GLuint prog) {
 	THREAD_SAFE()
+#ifdef RIO_VERTEX_PATCH_CACHE
+    rio_vertex_patch_invalidate(&rio_vertex_patches,prog);
+#endif
 
 	// Grabbing passed program
 	program *p = &progs[prog - 1];
@@ -2142,9 +2427,13 @@ void glGetProgramiv(GLuint progr, GLenum pname, GLint *params) {
 
 void glLinkProgram(GLuint progr) {
 	THREAD_SAFE()
+#ifdef RIO_VERTEX_PATCH_CACHE
+    rio_vertex_patch_invalidate(&rio_vertex_patches,progr);
+#endif
 
 	// Grabbing passed program
 	program *p = &progs[progr - 1];
+
 #ifndef SKIP_ERROR_HANDLING
 	if (glsl_sema_mode == VGL_MODE_POSTPONED) {
 		if (!(p->fshader->prog || (p->fshader->is_glsl && p->fshader->source)) || !(p->vshader->prog || (p->vshader->is_glsl && p->vshader->source))) {

@@ -155,12 +155,21 @@ static inline int rio_lod_preload_source(const char *name) {
         !strcmp(base,"sugarloaf_lightmap00.tga") ||
         !strcmp(base,"mountain_lightmap00.tga");
 }
+// Observed first-use hitch sources, in priority order. Loaded only after the
+// fixed startup set, using demand admission so they cannot displace that set.
+static const char *const rio_lod_supplemental_sources[]={
+    "downtown_00_lightmap00.tga", "downtown_01_lightmap00.tga",
+    "middleclass_00_lightmap00.tga", "airport_lightmap00.tga"
+};
 static inline int rio_lod_cache_source(const char *name) {
     return rio_lod_replace_source(name) || rio_lod_original_source(name);
 }
 const void *gangstar_texture_original_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 const void *gangstar_texture_lod_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 void gangstar_texture_lod_report(unsigned);
-// Main-thread loading phase only; uncached originals otherwise use native partial reads.
+// Main-thread fixed preload phase; demand fills otherwise use spare capacity only.
 void gangstar_texture_source_preloading(int);
+int gangstar_texture_source_background(uint64_t,uint32_t,const char *);
+typedef struct {uint64_t offset;uint32_t size;int original;unsigned priority;} RioTextureSourcePriority;
+void gangstar_texture_source_priorities(const RioTextureSourcePriority *,unsigned);
 #endif

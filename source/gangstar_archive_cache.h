@@ -44,6 +44,7 @@ ssize_t rio_archive_cache_read(RioArchiveCache *, int archive, uint64_t file_siz
 RioArchiveStats rio_archive_cache_stats(RioArchiveCache *);
 
 void gangstar_archive_init(void);
+int gangstar_archive_demand_busy(void);
 void gangstar_archive_prefetch_asset(int archive, uint64_t offset, uint64_t size);
 int gangstar_archive_open_shared(const char *path); // -2: use ordinary open
 void gangstar_archive_track(int fd, const char *path, int flags);

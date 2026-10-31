@@ -23,7 +23,40 @@
 #include "shared.h"
 #include "vitaGL.h"
 
+#ifdef RIO_VERTEX_RANGE_COPY
+#include "utils/vertex_range.h"
+static unsigned rio_range_draws, rio_range_trimmed;
+static uint64_t rio_range_saved;
+void vglGetVertexRangeStats(unsigned *draws,unsigned *trimmed,uint64_t *saved) {
+ THREAD_SAFE()
+ *draws=rio_range_draws;*trimmed=rio_range_trimmed;*saved=rio_range_saved;
+ rio_range_draws=rio_range_trimmed=0;rio_range_saved=0;
+}
+#endif
+// Optional loader-side sampling. Ordinary vitaGL builds have no profiler.
+extern uint64_t gangstar_render_stage_clock(void) __attribute__((weak));
+extern void gangstar_render_stage_end(unsigned,uint64_t) __attribute__((weak));
+#define RIO_STAGE_BEGIN() (gangstar_render_stage_clock?gangstar_render_stage_clock():0)
+#define RIO_STAGE_END(stage,began) do {if((began) && gangstar_render_stage_end)gangstar_render_stage_end(stage,began);} while(0)
+
 GLboolean prim_is_non_native = GL_FALSE; // Flag for when a primitive not supported natively by sceGxm is used
+
+#ifdef RIO_SELECTIVE_VERTEX_COPY
+static unsigned rio_rejected_draw_setups;
+void vglGetRejectedDrawSetupStats(unsigned *rejected) {
+ THREAD_SAFE()
+ *rejected=rio_rejected_draw_setups;rio_rejected_draw_setups=0;
+}
+#endif
+// Vertex setup may fail for allocation/bounds reasons even with API error
+// checks disabled. Never submit a draw using streams left by an earlier draw.
+static inline GLboolean rio_draw_setup_ready(GLboolean ready) {
+#ifdef RIO_SELECTIVE_VERTEX_COPY
+ if(!ready)++rio_rejected_draw_setups;
+#endif
+ return ready;
+}
+
 
 #ifndef INDICES_DRAW_SPEEDHACK
 #define setup_elements_indices(type_t) \
@@ -180,9 +213,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 		_glDrawArrays_FixedFunctionIMPL(first, count);
 	}
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		uint16_t *ptr;
 		switch (mode) {
@@ -292,9 +323,7 @@ void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei prim
 	scene_reset();
 	GLboolean is_draw_legal = _glDrawArrays_CustomShadersIMPL(first, count, GL_TRUE);
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		uint16_t *ptr;
 		switch (mode) {
@@ -348,7 +377,10 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_in
 
 	SceGxmPrimitiveType gxm_p;
 	gl_primitive_to_gxm(mode, gxm_p, count);
+	uint64_t rio_stage=RIO_STAGE_BEGIN();
 	scene_reset();
+	RIO_STAGE_END(0,rio_stage);
+	rio_stage=RIO_STAGE_BEGIN();
 	GLboolean is_draw_legal = GL_TRUE;
 
 	vbo *gpu_buf = (vbo *)cur_vao->index_array_unit;
@@ -364,27 +396,67 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *gl_in
 		src = idx16;
 	}
 	
-	if (cur_program != 0)
-		is_draw_legal = _glDrawElements_CustomShadersIMPL(src, count, 0, 0, type != GL_UNSIGNED_INT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
+	uint32_t rio_first_vertex=0, rio_vertex_count=0;
+#ifdef RIO_VERTEX_RANGE_COPY
+ ++rio_range_draws;
+ /* Restrict rebasing to native, non-instanced U16 triangles with client
+  * indices and client vertices. All other entry points remain unchanged. */
+ if(cur_program && mode==GL_TRIANGLES && !prim_is_non_native &&
+    type==GL_UNSIGNED_SHORT && !gpu_buf && count>0 && vglRioClientRangeEligible()) {
+  uint32_t lowest,highest;
+  if(rio_vertex_bounds16(src,(size_t)count,&lowest,&highest)) {
+   // Reuse the measured upper bound even when trimming is not worthwhile
+   // or its allocation fails. Setup otherwise scans this same array again.
+   rio_vertex_count=highest+1;
+   if(rio_vertex_range_worth_copying(lowest,highest)) {
+    uint16_t *rebased=gpu_alloc_mapped_temp((size_t)count*sizeof(*rebased));
+    if(rebased) {
+     rio_vertex_rebase16(rebased,src,(size_t)count,lowest);
+     rio_first_vertex=lowest;rio_vertex_count=highest-lowest+1;
+     src=rebased;++rio_range_trimmed;rio_range_saved+=rio_first_vertex;
+    }
+   }
+  }
+ }
+#endif
+ if (cur_program != 0)
+  is_draw_legal = _glDrawElements_CustomShadersRangeIMPL(src,count,rio_vertex_count,0,
+   type!=GL_UNSIGNED_INT?SCE_GXM_INDEX_SOURCE_INDEX_16BIT:SCE_GXM_INDEX_SOURCE_INDEX_32BIT,rio_first_vertex);
 	else {
 		if (!(ffp_vertex_attrib_state & (1 << 0)))
 			return;
 		_glDrawElements_FixedFunctionIMPL(src, count, 0, 0, type != GL_UNSIGNED_INT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
 	}
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	RIO_STAGE_END(1,rio_stage);
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
-		if (type == GL_UNSIGNED_SHORT) {
+		if (rio_first_vertex) {
+   /* The rebased buffer already belongs to the ordinary temporary GPU pool. */
+   rio_stage=RIO_STAGE_BEGIN();
+   sceGxmDraw(gxm_context,gxm_p,SCE_GXM_INDEX_FORMAT_U16,src,count);
+   RIO_STAGE_END(3,rio_stage);
+  } else if (type == GL_UNSIGNED_SHORT) {
+			rio_stage=RIO_STAGE_BEGIN();
 			setup_elements_indices(uint16_t);
+			RIO_STAGE_END(2,rio_stage);
+			rio_stage=RIO_STAGE_BEGIN();
 			sceGxmDraw(gxm_context, gxm_p, SCE_GXM_INDEX_FORMAT_U16, ptr, count);
+			RIO_STAGE_END(3,rio_stage);
 		} else if (type == GL_UNSIGNED_INT) {
+			rio_stage=RIO_STAGE_BEGIN();
 			setup_elements_indices(uint32_t);
+			RIO_STAGE_END(2,rio_stage);
+			rio_stage=RIO_STAGE_BEGIN();
 			sceGxmDraw(gxm_context, gxm_p, SCE_GXM_INDEX_FORMAT_U32, ptr, count);
+			RIO_STAGE_END(3,rio_stage);
 		} else {
+			rio_stage=RIO_STAGE_BEGIN();
 			setup_8bit_elements_indices();
+			RIO_STAGE_END(2,rio_stage);
+			rio_stage=RIO_STAGE_BEGIN();
 			sceGxmDraw(gxm_context, gxm_p, SCE_GXM_INDEX_FORMAT_U16, ptr, count);
+			RIO_STAGE_END(3,rio_stage);
 		}
 	}
 	restore_polygon_mode(gxm_p);
@@ -418,9 +490,7 @@ void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const GLv
 		_glDrawElements_FixedFunctionIMPL(src, count, 0, baseVertex, type == GL_UNSIGNED_SHORT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
 	}
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		if (type == GL_UNSIGNED_INT) {
 			setup_elements_indices(uint32_t);
@@ -465,9 +535,7 @@ void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, G
 		_glDrawElements_FixedFunctionIMPL(src, count, end + 1, 0, type == GL_UNSIGNED_SHORT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
 	}
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		if (type == GL_UNSIGNED_INT) {
 			setup_elements_indices(uint32_t);
@@ -510,9 +578,7 @@ void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsize
 		_glDrawElements_FixedFunctionIMPL(src, count, end + baseVertex + 1, baseVertex, type == GL_UNSIGNED_SHORT ? SCE_GXM_INDEX_SOURCE_INDEX_16BIT : SCE_GXM_INDEX_SOURCE_INDEX_32BIT);
 	}
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		if (type == GL_UNSIGNED_INT) {
 			setup_elements_indices(uint32_t)
@@ -550,9 +616,7 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
 	uint16_t *src = gpu_buf ? (uint16_t *)((uint8_t *)gpu_buf->ptr + (uint32_t)gl_indices) : (uint16_t *)gl_indices;
 	GLboolean is_draw_legal = _glDrawElements_CustomShadersIMPL(src, count, 0, 0, type == GL_UNSIGNED_SHORT ? SCE_GXM_INDEX_SOURCE_INSTANCE_16BIT : SCE_GXM_INDEX_SOURCE_INSTANCE_32BIT);
 
-#ifndef SKIP_ERROR_HANDLING
-	if (is_draw_legal)
-#endif
+	if (rio_draw_setup_ready(is_draw_legal))
 	{
 		if (type == GL_UNSIGNED_INT) {
 			setup_elements_indices(uint32_t);
