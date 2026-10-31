@@ -18,9 +18,10 @@ You need your own copy of the supported Android game. The repository and VPK do 
 | Left stick | Move | Steer |
 | Right stick | Camera | Camera |
 | Cross (hold) | Sprint | Nitro (release; when available) |
-| Square / R | Punch or fire (hold) | Square: attack; R: accelerate |
+| Square (hold) | Punch or fire | Fire |
+| R | — | Accelerate |
 | Circle / L | Take cover (release) | Circle: toggle radio; L: brake |
-| Triangle | Nearby shop/item interaction, otherwise enter vehicle | Exit vehicle (release) |
+| Triangle | Get up when fallen (tap repeatedly); otherwise nearby shop/item interaction or enter vehicle | Exit vehicle (release) |
 | D-pad left / right | Previous / next weapon | Previous / next weapon |
 | D-pad up | Reload | Toggle radio |
 | D-pad down | Use selected consumable | Vehicle side mission (when available) |
@@ -29,8 +30,6 @@ You need your own copy of the supported Android game. The repository and VPK do 
 | Touchscreen | Menus and contextual prompts | Menus and contextual prompts |
 
 Aircraft use the left stick for pitch/roll through the game's native aircraft stick controls; R/L provide the native accelerate/brake inputs. Physical tilt steering is disabled for cars and aircraft. Aircraft controls still need mission testing on hardware.
-
-The on-screen control drawings are hidden, but their touch regions still work. Actions depend on the current weapon, vehicle and game state. Some contextual actions still use the touchscreen.
 
 ## Building the current version
 
@@ -42,7 +41,7 @@ bash build.sh
 
 The VPK will be at `work/build/gangstar_rio_wip.vpk`.
 
-The default build uses the current preferred gameplay settings, including a **32 MB archive cache with 32 KB blocks**, the audio lookup improvements and texture allocation optimizations. You do not need to set performance options or copy anyone else's build cache. See the [build guide](docs/BUILDING.md) for setup and a clean build.
+The default build uses the current preferred gameplay settings. You do not need to set performance options or copy anyone else's build cache. See the [build guide](docs/BUILDING.md) for setup and a clean build.
 
 ## Contributing
 

@@ -6,8 +6,10 @@
 #include "utils/dialog.h"
 #include "utils/logger.h"
 #include <so_util/so_util.h>
+#include <kubridge.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/ctrl.h>
+#include "gangstar_startup_trampoline.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -24,7 +26,7 @@ static void *(*hud_instance)(void), *(*event_instance)(void);
 static int (*hud_visible)(void *), (*hud_locked)(void *), (*hud_flying)(void *);
 static void *(*script_instance)(void);
 static int (*in_cinematic)(void *), (*controls_locked)(void *);
-static int (*near_shop)(void *), (*near_item)(void *);
+static int (*near_shop)(void *), (*near_item)(void *), (*getup_active)(void *);
 static unsigned triangle_action=2;
 static void (*raise_event)(void *, const void *);
 static void (*move_camera)(void *, int, int);
@@ -33,6 +35,41 @@ static uint32_t stick_move_vtable, stick_release_vtable, steer_vtable;
 static uint32_t pedal_vtable, virtual_vtable;
 static RioPadActions actions;
 static uint32_t consumed_keys[8];
+static uintptr_t touch_button_vtables[4], touch_stick_vtables[3];
+static void (*touch_button_update_original)(void *,double);
+
+static void physical_button_touch_update(void *button, double seconds) {
+    unsigned type;
+    memcpy(&type,(const char *)button+0x68,sizeof(type));
+    if(rio_touch_button_mapped(type))return;
+    // VirtualButton::update independently hit-tests the stored rectangle,
+    // bypassing getTouchRegion. Preserve that path for UI/context buttons.
+    touch_button_update_original(button,seconds);
+}
+static void physical_stick_touch_update(void *stick, double seconds) {
+    (void)stick;(void)seconds;
+}
+
+// HudElement::getTouchRegion returns a 16-byte rect through an ARM hidden
+// result pointer (r0), followed by this (r1). Keep native HUD state intact:
+// visibility is also queried by contextual physical actions such as get-up.
+static void physical_control_touch_region(float *region, const void *element) {
+    uint32_t vtable, type;
+    memcpy(&vtable, element, sizeof(vtable));
+    int blocked=0;
+    for(unsigned i=0;i<sizeof(touch_stick_vtables)/sizeof(*touch_stick_vtables);++i)
+        if(vtable==touch_stick_vtables[i])blocked=1;
+    for(unsigned i=0;i<sizeof(touch_button_vtables)/sizeof(*touch_button_vtables);++i)
+        if(vtable==touch_button_vtables[i]) {
+            memcpy(&type,(const char *)element+0x68,sizeof(type));
+            blocked=rio_touch_button_mapped(type);
+        }
+    if(blocked) {
+        // A valid rectangle entirely outside the touchscreen coordinate range.
+        region[0]=region[1]=-10000.0f;
+        region[2]=region[3]=-9999.0f;
+    } else memcpy(region,(const char *)element+0x58,4*sizeof(float));
+}
 
 typedef struct {
     uint32_t vtable, type;
@@ -78,10 +115,13 @@ static void send_button(void *unused, unsigned button, unsigned state) {
     if (button==2) {
         if(last_mode==1 && state==0) {
             void *hud=hud_instance();
-            triangle_action=rio_triangle_action(last_mode,hud && near_shop(hud),hud && near_item(hud));
-            l_info("Gangstar context action: %s",triangle_action==4?"shop":triangle_action==3?"item":"vehicle");
+            // Latch the context on press so release reaches the same action.
+            // Native get-up button 21 advances recovery on release (state 2).
+            triangle_action=rio_triangle_action(last_mode,hud && getup_active(hud),hud && near_shop(hud),hud && near_item(hud));
+            l_info("Gangstar context action: %s",triangle_action==21?"get up":triangle_action==4?"shop":triangle_action==3?"item":"vehicle");
         }
-        button=last_mode>=2?2:triangle_action;
+        // Cancellation must reach the action latched before a HUD-mode change.
+        button=state==3?triangle_action:last_mode>=2?2:triangle_action;
     }
     struct { uint32_t vtable,type,state,button,context,callback; } event={
         virtual_vtable,13,state,button,0,0};
@@ -141,6 +181,7 @@ void gangstar_controls_init(void) {
     controls_locked = (void *)required("_ZNK15CControlManager8isLockedEv");
     near_shop = (void *)required("_ZNK11CHudManager10isNearShopEv");
     near_item = (void *)required("_ZNK11CHudManager10isNearItemEv");
+    getup_active = (void *)required("_ZNK11CHudManager19isGetupButtonActiveEv");
     event_instance = (void *)required("_ZN12EventManager11getInstanceEv");
     raise_event = (void *)required("_ZN12EventManager5raiseERK6IEvent");
     move_camera = (void *)required("_ZN11Application17powerA_MoveCameraEii");
@@ -150,6 +191,44 @@ void gangstar_controls_init(void) {
     steer_vtable = required("_ZTV20EvLeftRightStickMove") + 8;
     pedal_vtable = required("_ZTV17EvUpDownStickMove") + 8;
     virtual_vtable = required("_ZTV15EvVirtualButton") + 8;
+    static const char *touch_buttons[]={"_ZTV13VirtualButton","_ZTV12SprintButton",
+        "_ZTV12ToggleButton","_ZTV14AnimatedButton"};
+    static const char *touch_sticks[]={"_ZTV11AnalogStick","_ZTV12SlideControl","_ZTV5Wheel"};
+    for(unsigned i=0;i<sizeof(touch_buttons)/sizeof(*touch_buttons);++i)
+        touch_button_vtables[i]=required(touch_buttons[i])+8;
+    for(unsigned i=0;i<sizeof(touch_sticks)/sizeof(*touch_sticks);++i)
+        touch_stick_vtables[i]=required(touch_sticks[i])+8;
+    uintptr_t touch_region=required("_ZN10HudElement14getTouchRegionEv");
+    static const uint32_t region_expected[]={0xedd17a16,0xedc07a00};
+    if(memcmp((void *)touch_region,region_expected,sizeof(region_expected)))
+        fatal_error("Gangstar controls: unsupported HUD touch region layout");
+    hook_addr(touch_region,(uintptr_t)physical_control_touch_region);
+    uintptr_t button_update=required("_ZN13VirtualButton6updateEd");
+    static const uint32_t update_expected[]={0xe92d4070,0xe5903024};
+    if(memcmp((void *)button_update,update_expected,sizeof(update_expected)))
+        fatal_error("Gangstar controls: unsupported button touch update layout");
+    uint32_t trampoline[6],literals[2]={0};
+    uintptr_t target=(so_mod.patch_head+3)&~(uintptr_t)3;
+    if(!rio_startup_trampoline(trampoline,button_update,update_expected,literals) ||
+       target<so_mod.patch_base || target>so_mod.patch_base+so_mod.patch_size ||
+       sizeof(trampoline)>so_mod.patch_base+so_mod.patch_size-target)
+        fatal_error("Gangstar controls: no space for button update trampoline");
+    memcpy((void *)target,trampoline,sizeof(trampoline));
+    so_mod.patch_head=target+sizeof(trampoline);
+    kuKernelFlushCaches((void *)target,sizeof(trampoline));
+    touch_button_update_original=(void *)target;
+    hook_addr(button_update,(uintptr_t)physical_button_touch_update);
+    kuKernelFlushCaches((void *)button_update,8);
+    static const char *stick_updates[]={"_ZN11AnalogStick6updateEd",
+        "_ZN12SlideControl6updateEd","_ZN5Wheel6updateEd"};
+    static const uint32_t stick_update_expected[]={0xe59f30c8,0xeddf7a30};
+    for(unsigned i=0;i<sizeof(stick_updates)/sizeof(*stick_updates);++i) {
+        uintptr_t update=required(stick_updates[i]);
+        if(memcmp((void *)update,stick_update_expected,sizeof(stick_update_expected)))
+            fatal_error("Gangstar controls: unsupported stick touch update layout");
+        hook_addr(update,(uintptr_t)physical_stick_touch_update);
+    }
+    l_info("Gangstar mapped gameplay touch regions disabled; UI and touch camera retained");
     uintptr_t tilt = required("_ZN21DrivingControlHandler18handleAccelerationEPK14EvAcceleration");
     static const uint32_t expected[] = {0xe92d41f0, 0xed2d8b06};
     if (memcmp((void *)tilt, expected, sizeof(expected)))
@@ -165,7 +244,7 @@ void gangstar_controls_init(void) {
     if(memcmp((void *)flying_stick,stick_expected,sizeof(stick_expected)))
         fatal_error("Gangstar controls: unsupported aircraft stick handler");
     hook_addr(flying_stick,(uintptr_t)aircraft_stick);
-    l_info("Gangstar controls: left stick walk/steer, right stick camera, native action buttons, R accelerate/L brake while driving; car/aircraft tilt disabled; left stick aircraft pitch/roll");
+    l_info("Gangstar controls: left stick walk/steer, right stick camera, Square attack only, R accelerate/L brake while driving; car/aircraft tilt disabled; left stick aircraft pitch/roll");
 }
 
 void gangstar_controls_stick(ControlsStickId which, float x, float y) {
