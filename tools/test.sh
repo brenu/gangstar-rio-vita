@@ -159,6 +159,7 @@ work/tests/index_max
 python3 tools/test_gangstar_active_index_scan.py
 python3 tools/test_gangstar_cull_thread_id.py
 python3 tools/test_gangstar_profile_disabled.py
+python3 tools/test_gangstar_clone_name.py
 python3 tools/test_gangstar_selective_vertex.py
 python3 tools/test_gangstar_vertex_scratch.py
 
