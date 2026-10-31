@@ -30,10 +30,12 @@ static int (*near_shop)(void *), (*near_item)(void *), (*getup_active)(void *);
 static unsigned triangle_action=2;
 static void (*raise_event)(void *, const void *);
 static void (*move_camera)(void *, int, int);
-static void **application;
+static void **application, **player_instance;
+static int (*player_fallen)(void *);
 static uint32_t stick_move_vtable, stick_release_vtable, steer_vtable;
 static uint32_t pedal_vtable, virtual_vtable;
-static RioPadActions actions;
+static RioPadActions actions, recovery_actions;
+static int recovering;
 static uint32_t consumed_keys[8];
 static uintptr_t touch_button_vtables[4], touch_stick_vtables[3];
 static void (*touch_button_update_original)(void *,double);
@@ -117,7 +119,13 @@ static void send_button(void *unused, unsigned button, unsigned state) {
             void *hud=hud_instance();
             // Latch the context on press so release reaches the same action.
             // Native get-up button 21 advances recovery on release (state 2).
-            triangle_action=rio_triangle_action(last_mode,hud && getup_active(hud),hud && near_shop(hud),hud && near_item(hud));
+            unsigned char *player=*player_instance;
+            int hud_getup=hud && getup_active(hud),fallen=player && player_fallen(player);
+            unsigned vehicle=0;int blocked=0;
+            if(player) {blocked=player[0x77d]!=0;memcpy(&vehicle,player+0x778,sizeof(vehicle));}
+            int recovery=rio_recovery_available(hud_getup,fallen,blocked,vehicle!=0);
+            triangle_action=rio_triangle_action(last_mode,recovery,hud && near_shop(hud),hud && near_item(hud));
+            l_info("Gangstar recovery context: hud=%d fallen=%d blocked=%d vehicle=%d",hud_getup,fallen,blocked,vehicle!=0);
             l_info("Gangstar context action: %s",triangle_action==21?"get up":triangle_action==4?"shop":triangle_action==3?"item":"vehicle");
         }
         // Cancellation must reach the action latched before a HUD-mode change.
@@ -126,7 +134,17 @@ static void send_button(void *unused, unsigned button, unsigned state) {
     struct { uint32_t vtable,type,state,button,context,callback; } event={
         virtual_vtable,13,state,button,0,0};
     _Static_assert(sizeof(event)==24,"Android virtual button layout");
+    unsigned before=0,after=0;
+    unsigned char *player=button==21 && state==2 ? *player_instance : NULL;
+    if(player)memcpy(&before,player+0x908,sizeof(before));
     raise_event(event_instance(),&event);
+    if(player) {
+        memcpy(&after,player+0x908,sizeof(after));
+        l_info("Gangstar recovery release: before=%u after=%u",before,after);
+    }
+}
+static void send_recovery_button(void *unused,unsigned button,unsigned state) {
+    (void)button;send_button(unused,21,state);
 }
 int gangstar_controls_filter_key(int key, ControlsAction action) {
     if(key<0 || key>=256 || key==AKEYCODE_BACK)return 0;
@@ -136,7 +154,7 @@ int gangstar_controls_filter_key(int key, ControlsAction action) {
         key==AKEYCODE_BUTTON_SELECT;
     unsigned mask=1u<<(key&31);uint32_t *word=&consumed_keys[key>>5];
     if(!mapped)return 0;
-    return rio_key_consume(word,mask,last_mode!=0,action==CONTROLS_ACTION_DOWN);
+    return rio_key_consume(word,mask,last_mode!=0 || recovering,action==CONTROLS_ACTION_DOWN);
 }
 static unsigned action_buttons(void) {
     static const struct {unsigned vita,logical;} map[]={
@@ -181,6 +199,8 @@ void gangstar_controls_init(void) {
     controls_locked = (void *)required("_ZNK15CControlManager8isLockedEv");
     near_shop = (void *)required("_ZNK11CHudManager10isNearShopEv");
     near_item = (void *)required("_ZNK11CHudManager10isNearItemEv");
+    player_instance=(void *)required("_ZN6Player8s_playerE");
+    player_fallen=(void *)required("_ZN9Character10isFallDownEv");
     getup_active = (void *)required("_ZNK11CHudManager19isGetupButtonActiveEv");
     event_instance = (void *)required("_ZN12EventManager11getInstanceEv");
     raise_event = (void *)required("_ZN12EventManager5raiseERK6IEvent");
@@ -259,6 +279,7 @@ void gangstar_controls_poll(void) {
     last_poll = now;
     unsigned char *hud = NULL;
     int mode = 0;
+    recovering=0;
     if (game_loaded() && in_game()) {
         hud = hud_instance();
         // CHudManager::walking/driving select state pointers at +8/+12.
@@ -267,10 +288,15 @@ void gangstar_controls_poll(void) {
         // HUD visibility alone can become true before either gate clears.
         void *controls=*application ? *(void **)((char *)*application+0x17af4) : NULL;
         void *script=script_instance();
+        unsigned char *player=*player_instance;
+        // Native OnFootControlHandler::onEvent explicitly accepts button 21
+        // while controls are locked when this ejection/recovery flag is set.
+        recovering=player && player[0x77e] && script && !in_cinematic(script);
         if (hud && *(void **)(hud + 4) && hud_visible(hud) && !hud_locked(hud) &&
             controls && !controls_locked(controls) && script && !in_cinematic(script))
             mode = hud_flying(hud) ? 3 : *(void **)(hud + 4) == *(void **)(hud + 12) ? 2 : 1;
     }
+    if(recovering)mode=0; // Recovery accepts only Triangle; other controls remain cancelled.
     if (mode != last_mode) {
         // Repeat neutral after becoming active: a release sent while the
         // original control manager was locked may have been ignored.
@@ -290,7 +316,9 @@ void gangstar_controls_poll(void) {
         l_info("Gangstar analog input: %s", mode == 3 ? "flying" : mode == 2 ? "driving" : mode == 1 ? "on foot/other HUD" : "inactive");
         last_mode = mode;
     }
-    rio_pad_actions(&actions,mode==3?2:mode,action_buttons(),send_button,NULL);
+    unsigned physical=action_buttons();
+    rio_pad_actions(&actions,mode==3?2:mode,physical,send_button,NULL);
+    rio_pad_actions(&recovery_actions,recovering?1:0,physical&RIO_TRIANGLE,send_recovery_button,NULL);
     if (!mode) return;
     float x = sticks[0][0], y = sticks[0][1];
     if (mode >= 2) {

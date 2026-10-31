@@ -13,6 +13,10 @@ static inline int rio_touch_button_mapped(unsigned type) {
  default: return 0;
  }
 }
+// Match Player::updateHUD recovery eligibility without requiring a visible touch button.
+static inline int rio_recovery_available(int hud_active,int fallen,int blocked,int in_vehicle) {
+ return hud_active || (fallen && !blocked && !in_vehicle);
+}
 static inline unsigned rio_triangle_action(int mode,int getup,int shop,int item) {
  return mode==1 && getup?21:mode==1 && shop?4:mode==1 && item?3:2;
 }
