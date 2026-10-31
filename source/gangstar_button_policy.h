@@ -4,8 +4,17 @@
 enum { RIO_CROSS=1u, RIO_SQUARE=2u, RIO_CIRCLE=4u, RIO_TRIANGLE=8u,
  RIO_L=16u, RIO_R=32u, RIO_UP=64u, RIO_DOWN=128u, RIO_LEFT=256u,
  RIO_RIGHT=512u, RIO_SELECT=1024u, RIO_START=2048u };
-static inline unsigned rio_triangle_action(int mode,int shop,int item) {
- return mode==1 && shop?4:mode==1 && item?3:2;
+// Preserve UI/context buttons (shop, item, map, scripted prompts) and unknown
+// actions. Only disable touch duplicates of physical gameplay bindings.
+static inline int rio_touch_button_mapped(unsigned type) {
+ switch(type) {
+ case 0: case 2: case 9: case 10: case 11: case 13: case 16:
+ case 19: case 20: case 21: case 23: case 26: return 1;
+ default: return 0;
+ }
+}
+static inline unsigned rio_triangle_action(int mode,int getup,int shop,int item) {
+ return mode==1 && getup?21:mode==1 && shop?4:mode==1 && item?3:2;
 }
 typedef struct { unsigned held, blocked; int mode; unsigned pending_cancel; } RioPadActions;
 // Consume a release only if this bridge consumed its matching press.
@@ -22,7 +31,8 @@ static inline void rio_pad_actions(RioPadActions *p, int mode, unsigned buttons,
  RioButtonEmit emit, void *context) {
  static const struct { unsigned foot,car,type_foot,type_car,style_foot,style_car; } bindings[]={
   {RIO_CROSS,RIO_CROSS,26,23,3,1},
-  {RIO_SQUARE|RIO_R,RIO_SQUARE,0,0,2,2},
+  // Keep attack independent of R even while the HUD changes vehicle mode.
+  {RIO_SQUARE,RIO_SQUARE,0,0,2,2},
   {RIO_CIRCLE|RIO_L,RIO_CIRCLE,20,16,1,0},
   {RIO_TRIANGLE,RIO_TRIANGLE,2,2,4,1},
   {RIO_UP,RIO_UP,9,16,0,0},

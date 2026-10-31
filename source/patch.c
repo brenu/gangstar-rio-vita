@@ -219,8 +219,8 @@ static void gangstar_trace_audio_init(void) {
 #ifdef GANGSTAR_HIDE_TOUCH_BUTTONS
 static void gangstar_skip_touch_draw(const void *unused) { (void)unused; }
 static void gangstar_hide_touch_buttons(void) {
-    // Draw-only hooks: input hit regions, HUD visibility/state and regular GUI
-    // rendering stay native. Never suppress CHudManager's update or draw pass.
+    // Draw-only hooks. gangstar_controls_init separately filters mapped touch
+    // regions. Never suppress CHudManager's update or draw pass.
     static const struct { const char *symbol; uint32_t expected[2]; } draws[] = {
         {"_ZNK11AnalogStick6draw2dEv", {0xe92d4070, 0xe5903024}},
         {"_ZNK11SwipeButton6draw2dEv", {0xe52de004, 0xe5903024}},
@@ -242,7 +242,7 @@ static void gangstar_hide_touch_buttons(void) {
         }
         hook_addr(address, (uintptr_t)gangstar_skip_touch_draw);
     }
-    l_info("Gangstar touch-button drawing hidden; input regions and HUD state retained");
+    l_info("Gangstar touch-button drawing hidden; HUD state retained");
 }
 #endif
 

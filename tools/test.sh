@@ -174,3 +174,5 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_vertex_watch.
 work/tests/vertex_watch
 
 python3 tools/test_gangstar_partial_lightmap.py
+
+python3 tools/test_gangstar_touch_update.py
