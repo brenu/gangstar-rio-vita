@@ -172,3 +172,5 @@ python3 tools/test_gangstar_trace_draw_timing.py
 
 cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_vertex_watch.c -o work/tests/vertex_watch
 work/tests/vertex_watch
+
+python3 tools/test_gangstar_partial_lightmap.py

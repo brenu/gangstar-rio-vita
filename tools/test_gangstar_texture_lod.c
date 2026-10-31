@@ -1,4 +1,5 @@
 #include "gangstar_texture_lod.h"
+#include "gangstar_source_cache.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -109,6 +110,7 @@ int main(int argc, char **argv) {
     assert(originals==4 && preloaded==243 && source_budget==52725304);
     assert(source_budget < 64u*1024u*1024u);
     assert(sizeof(rio_lod_supplemental_sources)/sizeof(*rio_lod_supplemental_sources)==4);
+    assert(!strcmp(rio_lod_supplemental_sources[3],"airport_lightmap00.tga"));
     for(unsigned i=0;i<4;++i) {
         const char *name=rio_lod_supplemental_sources[i];
         assert(rio_lod_original_source(name) && !rio_lod_preload_source(name));
@@ -117,7 +119,7 @@ int main(int argc, char **argv) {
             matches+=!strcmp(name,rio_world_texture_names[j]);
         assert(matches==1);
     }
-    assert(source_budget+4ull*2796344 < 64u*1024u*1024u);
+    assert(source_budget+4ull*2796344 < RIO_SOURCE_CACHE_LIMIT);
     assert(!rio_lod_preload_source("copacabana_lightmap02.tga"));
     const char *route_maps[]={"rich_00_lightmap00.tga","rich_01_lightmap00.tga",
         "sugarloaf_lightmap00.tga","mountain_lightmap00.tga"};
@@ -171,15 +173,26 @@ int main(int argc, char **argv) {
         for(unsigned i=0;i<2;++i)assert(!pthread_join(readers[i],NULL));
         assert(reads==before);
         // Fill spare space, then confirm misses do no I/O and old assets survive.
-        for(unsigned i=4;i<23;++i) {
+        const unsigned full_sources=RIO_SOURCE_CACHE_LIMIT/2796344u;
+        for(unsigned i=4;i<full_sources;++i) {
             void *fill=(void *)gangstar_texture_original_get(0,100+4000000ull*i,2796344,"rich_00_lightmap00.tga",&length);
             assert(fill);free(fill);
         }
         before=reads;
-        assert(!gangstar_texture_original_get(0,100+4000000ull*23,2796344,"rich_00_lightmap00.tga",&length));
+        assert(!gangstar_texture_original_get(0,100+4000000ull*full_sources,2796344,"rich_00_lightmap00.tga",&length));
         assert(reads==before);
         void *retained=(void *)gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
         assert(retained && reads==before);free(retained);
+        // Actual positional range helper: short reads/EINTR, bounds and failure.
+        unsigned char tail[10936];interrupt_once=1;
+        assert(gangstar_lightmap_read_range(100,tail,2785408u,sizeof(tail)));
+        for(unsigned i=0;i<sizeof(tail);++i)assert(tail[i]==((2785408u+i)&255));
+        before=reads;
+        assert(!gangstar_lightmap_read_range(100,tail,2796344u,1));
+        assert(!gangstar_lightmap_read_range(2119380688u,tail,0,1));
+        assert(!gangstar_lightmap_read_range(100,NULL,0,1));
+        assert(reads==before);
+        fail_tail=1;assert(!gangstar_lightmap_read_range(100,tail,2785408u,sizeof(tail)));fail_tail=0;
         puts("Original lightmap readers: byte identity, independent ownership, exact families, interrupted/short reads and failed-fill fallback passed");
         return 0;
     }

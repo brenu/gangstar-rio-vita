@@ -44,6 +44,7 @@ static void step(Machine *m) {
 }
 int main(void) {
     const uint32_t prologues[][2] = {
+        {0xe92d4ff0,0xe59f94c0},
         {0xe92d4070,0xe1a06003},
         {0xe92d4ff0,0xed2d8b02},
         {0xe92d4010,0xe1a04000},

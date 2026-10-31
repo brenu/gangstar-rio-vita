@@ -5,7 +5,7 @@ s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static int nat
 for base in (47,50):
  for detail in (False,True):
   p=Path('work/tests/profile_hook_gate.c')
-  p.write_text('#include <assert.h>\n#define PHASE_BASE %d\n#define RIO_PHASE_NATIVE_TID 46\n#define RIO_PHASE_SUBMIT_BASE 47\n'%base+('#define GANGSTAR_DETAILED_RENDER_PROFILE\n' if detail else '')+s[a:b]+'''\nint main(void){for(unsigned i=0;i<PHASE_BASE+55;++i)assert(native_probe_needed(i)=='''+('1' if detail else '(i<PHASE_BASE || i==PHASE_BASE+46 || i>=PHASE_BASE+47)')+');}\n')
+  p.write_text('#include <assert.h>\n#define PHASE_BASE %d\n#define RIO_PHASE_NATIVE_TID 46\n#define RIO_PHASE_SUBMIT_BASE 47\n'%base+('#define GANGSTAR_DETAILED_RENDER_PROFILE\n' if detail else '')+s[a:b]+'''\nint main(void){for(unsigned i=0;i<PHASE_BASE+57;++i)assert(native_probe_needed(i)=='''+('1' if detail else '(i<PHASE_BASE || i==PHASE_BASE+46 || i>=PHASE_BASE+47)')+');}\n')
   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(p),'-o','work/tests/profile_hook_gate'],check=True)
   subprocess.run(['work/tests/profile_hook_gate'],check=True)
 p=Path('work/tests/profile_disabled.c');p.write_text(r'''

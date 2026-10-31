@@ -18,6 +18,7 @@
 #include "gangstar_pak_lookup.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_texture_lod.h"
+#include "gangstar_district_manifest.h"
 #include "gangstar_district_preload.h"
 #include "gangstar_asset_perf.h"
 #include "gangstar_resident_policy.h"
@@ -158,6 +159,9 @@ static struct Probe {
     ,{"_ZN6glitch5video6detail19IMaterialParametersINS0_9CMaterialENS_24ISharedMemoryBlockHeaderIS3_EEE14dropParametersEv","Sample_material_drop",{0xe92d4070,0xe5903004},NULL,0,0}
     ,{"_ZN6glitch5video9CMaterial4initEPKhPKNS0_6detail8material12SRenderStateEb","Sample_material_init",{0xe92d4070,0xe1a06003},NULL,0,0}
     ,{"_ZN6glitch4core6detail22SSharedStringHeapEntry5SData3getEPKcb","Sample_shared_string",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+
+    ,{"_ZN20MemoryMappedFileRead10openAndMapEPKc","Stream_partial_map",{0xe92d4010,0xe1a04000},NULL,0,0}
+    ,{"_ZN14CStreamTexture20getTextureFromStreamER20MemoryMappedFileReadRKSbIcSt11char_traitsIcE13GameAllocatorIcEES8_ib","Stream_partial_mips",{0xe92d4ff0,0xe59f94c0},NULL,0,0}
 
 };
 // Generic probes use r0-r3 and return at most one word. Probe 37 has an
@@ -1152,7 +1156,7 @@ static RioPhaseStack phase_stack;
 static RioRegistrationProfile registration_profile;
 static unsigned cull_prepare_depth;
 static struct {uint64_t calls,us,worst;unsigned samples;uint32_t random;} cull_lookup[4]={{.random=0x7ab451c3u},{.random=0x31502fadu},{.random=0x65c981b7u},{.random=0xa1d45763u}};
-enum { RIO_PHASE_REGISTER_TREE=35, RIO_PHASE_CULL_PREPARE=39, RIO_PHASE_LOOKUP_BASE=42, RIO_PHASE_NATIVE_TID=46, RIO_PHASE_SUBMIT_BASE=47, RIO_PHASE_COUNT=55 };
+enum { RIO_PHASE_REGISTER_TREE=35, RIO_PHASE_CULL_PREPARE=39, RIO_PHASE_LOOKUP_BASE=42, RIO_PHASE_NATIVE_TID=46, RIO_PHASE_SUBMIT_BASE=47, RIO_PHASE_COUNT=57 };
 static RioPhaseTotals phase_window[RIO_PHASE_COUNT];
 static struct {uint64_t calls,us;unsigned samples;uint32_t random;} submit_sample[8]={{.random=0x634128afu},{.random=0xa1345f71u},{.random=0x619f341bu},{.random=0xa312f75du},{.random=0x71365fadu},{.random=0xc31572abu},{.random=0x84732ab1u},{.random=0x6734adefu}};
 // Only the frame thread uses this slot, reset at the start of each frame.
@@ -1247,12 +1251,90 @@ PHASE_WRAPPER(9) PHASE_WRAPPER(10) PHASE_WRAPPER(11) PHASE_WRAPPER(12) PHASE_WRA
 PHASE_WRAPPER(16) PHASE_WRAPPER(17) PHASE_WRAPPER(18) PHASE_WRAPPER(19) PHASE_WRAPPER(20) PHASE_WRAPPER(21)
 PHASE_WRAPPER(22) PHASE_WRAPPER(23) PHASE_WRAPPER(24) PHASE_WRAPPER(25) PHASE_WRAPPER(26) PHASE_WRAPPER(27) PHASE_WRAPPER(28) PHASE_WRAPPER(29)
 PHASE_WRAPPER(30) PHASE_WRAPPER(31) PHASE_WRAPPER(32) PHASE_WRAPPER(33) PHASE_WRAPPER(34) PHASE_WRAPPER(35) PHASE_WRAPPER(36) PHASE_WRAPPER(37) PHASE_WRAPPER(38) PHASE_WRAPPER(39) PHASE_WRAPPER(40) PHASE_WRAPPER(41) PHASE_WRAPPER(42) PHASE_WRAPPER(43) PHASE_WRAPPER(44) PHASE_WRAPPER(45) PHASE_WRAPPER(46) PHASE_WRAPPER(47) PHASE_WRAPPER(48) PHASE_WRAPPER(49) PHASE_WRAPPER(50) PHASE_WRAPPER(51) PHASE_WRAPPER(52) PHASE_WRAPPER(53) PHASE_WRAPPER(54)
+// Only the verified CStreamTexture constructor call sites may defer DDS data.
+// Each native mapped reader keeps its original size/header and its own buffer.
+// Pixel bytes are materialized immediately before native getTextureFromStream.
+typedef struct {uintptr_t mapped;unsigned char *data;uint32_t offset;} RioPartialMap;
+static RioPartialMap partial_maps[16];
+static uintptr_t partial_ctor_base;
+static unsigned (*partial_mip_bytes)(unsigned,unsigned,unsigned,unsigned,unsigned);
+static int partial_caller(uintptr_t caller) {
+ static const unsigned sites[]={0x16c,0x418,0x498,0x510,0x8f0,0xb9c,0xc1c,0xc94};
+ // C1 and C2 contain the same constructor body, at different addresses.
+ for(unsigned i=0;i<sizeof(sites)/sizeof(*sites);++i)
+  if(caller==partial_ctor_base+sites[i])return 1;
+ return 0;
+}
+static uintptr_t stream_partial_map(uintptr_t mapped,uintptr_t name,uintptr_t c,uintptr_t d) {
+ NativeCall original=probes[PHASE_BASE+55].original;
+ uintptr_t caller=(uintptr_t)__builtin_return_address(0);
+ if(!gangstar_wait_is_main() || !probes[PHASE_BASE+56].original ||
+    !partial_mip_bytes || !partial_caller(caller))return original(mapped,name,c,d);
+ RioPartialMap *slot=NULL;
+ for(unsigned i=0;i<16;++i) {
+  if(partial_maps[i].mapped==mapped) {free(partial_maps[i].data);memset(&partial_maps[i],0,sizeof(partial_maps[i]));}
+  if(!partial_maps[i].mapped && !slot)slot=&partial_maps[i];
+ }
+ if(!slot || !mapped || !name)return original(mapped,name,c,d);
+ const char *base=strrchr((const char *)name,'/');base=base?base+1:(const char *)name;
+ if(!rio_lod_original_source(base))return original(mapped,name,c,d);
+ for(unsigned i=0;i<sizeof(rio_district_assets)/sizeof(*rio_district_assets);++i) {
+  if(rio_district_assets[i].size!=2796344u || strcmp(base,rio_district_assets[i].name))continue;
+  unsigned char header[128];RioTextureLod plan;
+  uint32_t offset=rio_district_assets[i].offset;
+  if(!gangstar_lightmap_read_range(offset,header,0,128) || !rio_lod_plan(header,2796344u,&plan))break;
+  // Zero skipped levels defensively; the original header/dimensions never change.
+  unsigned char *data=calloc(1,2796344u);if(!data)break;
+  memcpy(data,header,128);*(uintptr_t *)mapped=(uintptr_t)data;
+  ((uintptr_t *)mapped)[1]=2796344u;
+  *slot=(RioPartialMap){mapped,data,offset};return 1;
+ }
+ return original(mapped,name,c,d);
+}
+static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t mapped,
+ uintptr_t key,uintptr_t filename,uintptr_t level,uintptr_t flag) {
+ typedef uintptr_t (*StreamCall)(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t);
+ StreamCall original=(StreamCall)probes[PHASE_BASE+56].original;
+ if(gangstar_wait_is_main())for(unsigned i=0;i<16;++i) {
+  RioPartialMap *slot=&partial_maps[i];
+  if(!slot->mapped || slot->mapped!=mapped || *(uintptr_t *)mapped!=(uintptr_t)slot->data)continue;
+  uint32_t skip=0;
+  if(texture && level==4 && *(int *)(texture+0x88)==11 &&
+     *(unsigned *)(texture+0xbc)==2048 && *(unsigned *)(texture+0xc0)==2048 &&
+     *(unsigned *)(texture+0xb8)>=2 && *(unsigned *)(texture+0xb8)<=4) {
+   static const unsigned expected[]={2097152,524288,131072,32768};
+   unsigned format=*(unsigned *)(texture+0xc4);skip=128;
+   for(unsigned n=0;n<4;++n) {
+    unsigned bytes=partial_mip_bytes(format,2048,2048,n,0);
+    if(bytes!=expected[n]){skip=0;break;}skip+=bytes;
+   }
+  }
+  unsigned start=skip?skip:128;
+  if(!gangstar_lightmap_read_range(slot->offset,slot->data+start,start,2796344u-start)) {
+   // Never submit a partially populated texture after an I/O failure.
+   memset((void *)out,0,sizeof(uintptr_t));
+   free(slot->data);((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
+   memset(slot,0,sizeof(*slot));return out;
+  }
+  unsigned char *data=slot->data;
+  // Detach before the native consumer: nested loads may use another free slot.
+  memset(slot,0,sizeof(*slot));
+  uintptr_t result=original(out,texture,mapped,key,filename,level,flag);
+  if(*(uintptr_t *)mapped==(uintptr_t)data) {
+   ((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
+  }
+  free(data);
+  l_info("RIO_PARTIAL_LIGHTMAP requested=%u source_bytes=2796344 read_bytes=%u",(unsigned)level,128u+2796344u-start);
+  return result;
+ }
+ return original(out,texture,mapped,key,filename,level,flag);
+}
 static NativeCall wrappers[] = {probe_0, probe_1, probe_2, probe_3, probe_4, probe_5, probe_6, probe_7,
     probe_8, probe_9, probe_10, probe_11, probe_12, probe_13, probe_14, probe_15, probe_16, probe_17, probe_18, probe_19, probe_20, probe_21, probe_22, probe_23, probe_24, probe_25, probe_26, probe_27, probe_28, probe_29, probe_30, probe_31, probe_32, probe_33, probe_34, probe_35, probe_36, (NativeCall)probe_37, (NativeCall)probe_38,probe_39,probe_40,probe_41,probe_42,probe_43,probe_44,probe_45,probe_46
 #ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
     ,probe_47,probe_48,probe_49
 #endif
-    ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54
+    ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54,stream_partial_map,(NativeCall)stream_partial_mips
 };
 _Static_assert(sizeof(wrappers)/sizeof(*wrappers)==sizeof(probes)/sizeof(*probes), "Native probe wrapper count");
 #endif
@@ -1598,6 +1680,8 @@ void gangstar_native_startup_install(void) {
 #endif
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     unsigned installed = 0;
+    partial_ctor_base=so_symbol(&so_mod,"_ZN14CStreamTextureC2EPKN5boost13intrusive_ptrIN6glitch7collada8CResFileEEERKSbIcSt11char_traitsIcENS2_4core10SAllocatorIcLNS2_6memory13E_MEMORY_HINTE0EEEEPKNS1_INS2_2io9IReadFileEEE23CompressedTextureFormatPNS2_5video15CTextureManagerEPNS3_6SImageEPKcb");
+    partial_mip_bytes=(void *)so_symbol(&so_mod,"_ZN6glitch5video12pixel_format24computeMipmapSizeInBytesENS0_14E_PIXEL_FORMATEjjhb");
 #ifdef GANGSTAR_TEXTURE_PREWARM
 #ifdef GANGSTAR_WORLD_SOURCE_PREWARM
     world_source_fs_vtable=so_symbol(&so_mod,"_ZTV17CCustomFileSystem");

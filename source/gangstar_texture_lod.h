@@ -164,6 +164,7 @@ static const char *const rio_lod_supplemental_sources[]={
 static inline int rio_lod_cache_source(const char *name) {
     return rio_lod_replace_source(name) || rio_lod_original_source(name);
 }
+int gangstar_lightmap_read_range(uint32_t,void *,uint32_t,uint32_t);
 const void *gangstar_texture_original_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 const void *gangstar_texture_lod_get(int, uint64_t, uint32_t, const char *, uint32_t *);
 void gangstar_texture_lod_report(unsigned);
