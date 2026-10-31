@@ -22,7 +22,7 @@ static void step(Machine *m) {
             m->memory[m->r[13]/4+i*2]=(uint32_t)m->d[8+i];
             m->memory[m->r[13]/4+i*2+1]=(uint32_t)(m->d[8+i]>>32);
         }
-    } else if ((word == 0xe2514000 || word == 0xe2513000)) { m->r[rd] = m->r[1]; m->zero = m->r[rd] == 0; }
+    } else if ((word == 0xe2516000 || word == 0xe2514000 || word == 0xe2513000)) { m->r[rd] = m->r[1]; m->zero = m->r[rd] == 0; }
     else if(word==0xe3073b54)m->r[3]=0x7b54;
     else if(word==0xe3403001)m->r[3]=(m->r[3]&0xffff)|0x10000;
     else if(word==0xe1c022f0) { // strd r2,r3,[r0,#32], StateMachine timestamp
@@ -44,6 +44,14 @@ static void step(Machine *m) {
 }
 int main(void) {
     const uint32_t prologues[][2] = {
+        {0xe92d4070,0xe1a06003},
+        {0xe92d4ff0,0xed2d8b02},
+        {0xe92d4010,0xe1a04000},
+        {0xe92d4070,0xe5903004},
+        {0xe92d4030,0xe590c0dc},
+        {0xe92d41f0,0xe2516000},
+        {0xe92d4ff0,0xe1a07003},
+        {0xe92d4ff0,0xe5902108},
         {0xe92d4070,0xe59f4080},
         {0xe92d47f0,0xe1a04000},
         {0xe92d4010,0xe1a04000},
