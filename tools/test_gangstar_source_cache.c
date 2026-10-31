@@ -20,6 +20,11 @@ int main(void) {
  mismatch=a;++mismatch.source_size;assert(!rio_source_find(&c,mismatch));
  fail_next=1;assert(!rio_source_clone(&c,a,&size));assert(rio_source_find(&c,a));
  rio_source_trim(&c,0);assert(!c.bytes && !c.count && !memcmp(owned,bytes,4));free(owned);
+ assert(rio_source_store(&c,a,bytes,4,8));
+ rio_source_find(&c,a)->priority=4;
+ assert(rio_source_store(&c,b,bytes,4,8));assert(rio_source_store(&c,d,bytes,4,8));
+ assert(rio_source_find(&c,a) && !rio_source_find(&c,b)); // district priority beats newer LRU age
+ rio_source_trim(&c,0);
  fail_next=1;assert(!rio_source_store(&c,a,bytes,4,8) && !c.bytes);
  assert(!rio_source_store(&c,a,bytes,4,3));
  for(unsigned i=0;i<2000;++i) {

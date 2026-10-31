@@ -6,7 +6,7 @@
 #define RIO_SOURCE_CACHE_LIMIT (64u*1024u*1024u)
 #define RIO_SOURCE_CACHE_SLOTS 384u
 typedef struct {int archive,original;uint64_t offset;uint32_t source_size;} RioSourceKey;
-typedef struct {RioSourceKey key;void *data;size_t size;uint64_t age;} RioSourceEntry;
+typedef struct {RioSourceKey key;void *data;size_t size;uint64_t age;unsigned priority;} RioSourceEntry;
 typedef struct {RioSourceEntry entries[RIO_SOURCE_CACHE_SLOTS];size_t bytes;unsigned count,evictions;uint64_t age;} RioSourceCache;
 static inline size_t rio_source_allowance(size_t cap,size_t cached,size_t used,size_t watermark,size_t reader) {
  size_t game=used>=cached?used-cached:used;
@@ -16,7 +16,7 @@ static inline size_t rio_source_allowance(size_t cap,size_t cached,size_t used,s
 static inline void rio_source_evict(RioSourceCache *c) {
  unsigned oldest=RIO_SOURCE_CACHE_SLOTS;
  for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i)
-  if(c->entries[i].data && (oldest==RIO_SOURCE_CACHE_SLOTS || c->entries[i].age<c->entries[oldest].age))oldest=i;
+  if(c->entries[i].data && (oldest==RIO_SOURCE_CACHE_SLOTS || c->entries[i].priority<c->entries[oldest].priority || (c->entries[i].priority==c->entries[oldest].priority && c->entries[i].age<c->entries[oldest].age)))oldest=i;
  if(oldest==RIO_SOURCE_CACHE_SLOTS)return;
  RioSourceEntry *e=&c->entries[oldest];c->bytes-=e->size;--c->count;++c->evictions;
  free(e->data);memset(e,0,sizeof(*e));
@@ -41,7 +41,7 @@ static inline int rio_source_store(RioSourceCache *c,RioSourceKey key,const void
  while(c->bytes>limit-size || c->count==RIO_SOURCE_CACHE_SLOTS)rio_source_evict(c);
  void *copy=malloc(size);if(!copy)return 0;memcpy(copy,data,size);
  for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i)if(!c->entries[i].data){
-  c->entries[i]=(RioSourceEntry){key,copy,size,++c->age};c->bytes+=size;++c->count;return 1;
+  c->entries[i]=(RioSourceEntry){.key=key,.data=copy,.size=size,.age=++c->age};c->bytes+=size;++c->count;return 1;
  }
  free(copy);return 0;
 }

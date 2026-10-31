@@ -1,5 +1,11 @@
+#include "gangstar_registration_profile.h"
 #include "gangstar_audio_poll.h"
+#include "gangstar_phase_timing.h"
+#include "gangstar_render_sample.h"
 #include "gangstar_startup_trampoline.h"
+#ifdef GANGSTAR_SELECTIVE_VERTEX_COPY
+#include "gangstar_vertex_scratch.h"
+#endif
 #include "gangstar_audio_probe.h"
 #include "gangstar_audio_sched.h"
 #include "gangstar_audio_chunk.h"
@@ -12,6 +18,7 @@
 #include "gangstar_pak_lookup.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_texture_lod.h"
+#include "gangstar_district_preload.h"
 #include "gangstar_asset_perf.h"
 #include "gangstar_resident_policy.h"
 #include "gangstar_texture_identity.h"
@@ -91,6 +98,59 @@ static struct Probe {
     ,{"_ZN3vox25VoxMSWavSubDecoderMSADPCM11DecodeBlockEPv", "Block_MS", {0xe92d4ff0,0xe5902008}, NULL,0,0}
     ,{"_ZN3vox26VoxMSWavSubDecoderIMAADPCM4SeekEj", "IMA_seek", {0xe92d41f0,0xe1a05001}, NULL,0,0}
 #endif
+    ,{"_ZN11Application6UpdateEv","Phase_application",{0xe92d41f0,0xe1a05000},NULL,0,0}
+    ,{"_ZN9GS3DStuff6updateEP12StateMachine","Phase_game_update",{0xe92d4ff0,0xed2d8b06},NULL,0,0}
+    ,{"_ZN9GS3DStuff4drawEv","Phase_draw",{0xe59f042c,0xe59f142c},NULL,0,0}
+    ,{"_ZN7b2World4StepEfii","Phase_physics",{0xe92d41f0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN5World15UpdateStreamingERN6glitch4core8vector3dIfEEff","Phase_world_stream",{0xe92d4ff0,0xed2d8b04},NULL,0,0}
+
+    ,{"_ZN11Application5_DrawEv","Phase_render_frame",{0xe92d4ff0,0xe59f4e84},NULL,0,0}
+    ,{"_ZN4glot15TrackingManager6UpdateEi","Phase_tracking",{0xe92d41f0,0xe3510000},NULL,0,0}
+    ,{"_ZN6glitch7IDevice3runEv","Phase_device",{0xe92d4010,0xe1a04000},NULL,0,0}
+    ,{"_ZN3glf12EventManager14DispatchEventsEv","Phase_events",{0xe92d41f0,0xe59f70cc},NULL,0,0}
+
+    ,{"_ZN3glf12InputManager11UpdateFrameEv","Phase_input",{0xe92d4ff0,0xe5909010},NULL,0,0}
+    ,{"_ZN11Application8PostInitEv","Phase_post_init",{0xe92d47f0,0xe24dd008},NULL,0,0}
+
+    ,{"_ZN11Application7_UpdateEi","Phase_update_frame",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN11Application18updateDelayedTasksEi","Phase_delayed_tasks",{0xe3073b54,0xe3403001},NULL,0,0}
+    ,{"_ZN7MenuMgr6UpdateEi","Phase_menu_update",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+    // Soft-float ABI passes StateMachine::update(double) in r0/r2/r3;
+    // the four-word phase wrapper forwards those argument bits unchanged.
+    ,{"_ZN12StateMachine6updateEd","Phase_state_update",{0xe92d4070,0xe1c022f0},NULL,0,0}
+    ,{"_ZN17GameObjectManager5PrintEv","Phase_object_stats",{0xe92d4070,0xe59f406c},NULL,0,0}
+    ,{"_ZN6GSMain6updateEP12StateMachine","Phase_main_state",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN6GSMain11LoadingMenu6updateEPS_","Phase_loading_state",{0xe92d45f0,0xe24dd014},NULL,0,0}
+    ,{"_ZN9GS3DStuff4loadEiRi","Phase_world_load",{0xe92d4ff0,0xe59f4dcc},NULL,0,0}
+    ,{"_ZN12StateMachine12_switchStateEP9StateBase","Phase_state_switch",{0xe92d4070,0xe5903014},NULL,0,0}
+    ,{"_ZN12StateMachine10_pushStateEP9StateBase","Phase_state_push",{0xe92d47f0,0xe1a04000},NULL,0,0}
+    ,{"_ZN12StateMachine8popStateEv","Phase_state_pop",{0xe92d4010,0xe5903014},NULL,0,0}
+    ,{"_ZN19CCustomSceneManager7drawAllERKN5boost13intrusive_ptrIN6glitch5scene10ISceneNodeEEEbb","Phase_scene_custom",{0xe92d4ff0,0xed2d8b06},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager7drawAllERKN5boost13intrusive_ptrINS0_10ISceneNodeEEEbb","Phase_scene_draw",{0xe92d41f0,0xe1a05002},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager11renderListsEPNS_5video12IVideoDriverEb","Phase_render_lists",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager18renderListsCompileEPNS_5video12IVideoDriverE","Phase_compile_lists",{0xe92d4ff0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager19drawShadowReceiversEv","Phase_shadow_receivers",{0xe92d4ff0,0xe5902090},NULL,0,0}
+    ,{"_ZN11PostEffects7PreDrawEv","Phase_effects_pre",{0xe92d47f0,0xe59f4180},NULL,0,0}
+    ,{"_ZN11PostEffects8PostDrawEv","Phase_effects_post",{0xe92d45f0,0xe24dd014},NULL,0,0}
+    ,{"_ZNK12StateMachine4drawEv","Phase_state_draw",{0xe92d4010,0xe5903014},NULL,0,0}
+    ,{"_ZN5World16UpdateBillboardsEv","Phase_billboards",{0xe5900020,0xe3500000},NULL,0,0}
+    ,{"_ZN7DayTime14RegisterLightsEPN6glitch5scene13CSceneManagerE","Phase_day_lights",{0xe92d4ff0,0xe24dd02c},NULL,0,0}
+    ,{"_ZN6glitch4core8heapsortINS_5scene13CSceneManager17SDefaultNodeEntryEEEvPT_i","Phase_sort_opaque",{0xe92d4ff0,0xe24dd0b4},NULL,0,0}
+    ,{"_ZN6glitch4core8heapsortINS_5scene13CSceneManager21STransparentNodeEntryEEEvPT_i","Phase_sort_transparent",{0xe92d4ff0,0xe24dd0b4},NULL,0,0}
+    ,{"_ZN23CLowResCitySceneManager13drawAllLowResEPN6glitch5scene13CSceneManagerE","Phase_lowres_city",{0xe92d47f0,0xed2d8b02},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager18registerSceneNodesERKN5boost13intrusive_ptrINS0_10ISceneNodeEEE","Phase_register_tree",{0xe92d4070,0xe59030d8},NULL,0,0}
+    ,{"_ZN6glitch5scene13CSceneManager18registerSceneNodesERKSt6vectorIN5boost13intrusive_ptrINS0_10ISceneNodeEEENS_4core10SAllocatorIS6_LNS_6memory13E_MEMORY_HINTE0EEEE","Phase_register_vector",{0xe92d4070,0xe59030d8},NULL,0,0}
+    ,{"_ZN11PostEffects24UpdateHDWaterFrameBufferEv","Phase_water_framebuffer",{0xe92d40f0,0xe24dd014},NULL,0,0}
+    ,{"_ZN13CCustomCuller5startEPN6glitch5scene13CSceneManagerERKN5boost13intrusive_ptrINS1_10ISceneNodeEEE","Phase_culler_start",{0xe92d41f0,0xe3a03000},NULL,0,0}
+    ,{"_ZN13CCustomCuller9cullStartEPN6glitch5scene13CSceneManagerE","Phase_culler_prepare",{0xe92d4ff0,0xe59110d8},NULL,0,0}
+    ,{"_ZN6glitch5scene15getFrustumBoxesERKNS0_12SViewFrustumERKNS0_5SGridERSt6vectorINS_4core8vector2dIiEESaISA_EERS7_INS0_11SBlockRangeESaISE_EE","Phase_frustum_boxes",{0xe92d4ff0,0xed2d8b04},NULL,0,0}
+    ,{"_ZN6glitch5scene18CStreamedBatchMeshI14SSegmentExtPtr23ExtraDataHandlingPolicyNS0_25SProactiveMemoryAllocatorEE12flushSubDataEv","Phase_stream_mesh_flush",{0xe92d4ff0,0xe2801f83},NULL,0,0}
+    ,{"_ZNK6glitch5scene21CRegularGridStreamingItE23getIteratorsForGridCellERKNS_4core8vector3dIiEERNS_4util10CRLEBitSetIjNS3_10SAllocatorIjLNS_6memory13E_MEMORY_HINTE0EEEE18CRLEBitSetIteratorESG_","Phase_grid_lookup_sampled",{0xe92d41f0,0xe1a06002},NULL,0,0}
+    ,{"_ZNK6glitch5scene18CStreamedBatchMeshI14SSegmentExtPtr23ExtraDataHandlingPolicyNS0_25SProactiveMemoryAllocatorEE10getSegmentEj","Phase_segment_lookup_sampled",{0xe92d4010,0xe24dd010},NULL,0,0}
+    ,{"_ZN3glf17ReadWriteSpinLock12readLockImplEj","Phase_read_lock_sampled",{0xe92d47f0,0xe1a04000},NULL,0,0}
+    ,{"_ZN3glf17ReadWriteSpinLock10readUnlockEv","Phase_read_unlock_sampled",{0xe92d4010,0xe1a04000},NULL,0,0}
+    ,{"_ZN3glf6Thread21GetSequentialThreadIdEv","Cached_sequential_thread_id",{0xe92d4070,0xe59f4080},NULL,0,0}
+
 };
 // Generic probes use r0-r3 and return at most one word. Probe 37 has an
 // explicit five-argument wrapper; probe 38 has seven arguments.
@@ -727,6 +787,7 @@ static uintptr_t probe_33(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { 
 static uintptr_t probe_34(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { return pin_clear_call(34,a,b,c,d); }
 #ifdef GANGSTAR_WORLD_SOURCE_PREWARM
 static void preload_world_sources(uintptr_t manager) {
+    if(gangstar_district_start())return;
     if (world_source_preload_done || !world_source_fs_vtable || !world_source_file_release) return;
     // The native getter uses this exact intrusive IFileSystem member. Opening
     // through its virtual API retains the engine's filesystem locking, archive
@@ -758,6 +819,18 @@ static void preload_world_sources(uintptr_t manager) {
         world_source_file_release(file);
     }
     gangstar_texture_source_preloading(0);
+    // Keep the generic preload intact. Supplemental full-size lightmaps use
+    // the spare-only demand policy; a full cache opens the native reader
+    // without loading its payload here. No gameplay background I/O is added.
+    unsigned supplemental_opened=0;
+    for(unsigned i=0;i<sizeof(rio_lod_supplemental_sources)/sizeof(*rio_lod_supplemental_sources);++i) {
+        char path[192];uintptr_t file=0;
+        snprintf(path,sizeof(path),"_packetc/%s",rio_lod_supplemental_sources[i]);
+        open((uintptr_t)&file,fs,(uintptr_t)path,0);
+        if(file){++supplemental_opened;world_source_file_release(file);}
+    }
+    l_info("RIO_SOURCE_SUPPLEMENTAL attempted=%u opened=%u spare_only=1",
+        (unsigned)(sizeof(rio_lod_supplemental_sources)/sizeof(*rio_lod_supplemental_sources)),supplemental_opened);
     world_source_preload_done=ready==requested;
     l_info("RIO_SOURCE_PREWARM requested=%u ready=%u missing=%u original=%u expected_bytes=%u elapsed_us=%llu",
         requested,ready,missing,original,expected_bytes,
@@ -1062,15 +1135,136 @@ static void audio_probe_report(void) {
     }
     if(dropped)l_info("RIO_EMITTER_UPDATE dropped=%u",dropped);
 }
+#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#define PHASE_BASE 50
+#else
+#define PHASE_BASE 47
+#endif
+static RioPhaseStack phase_stack;
+static RioRegistrationProfile registration_profile;
+static unsigned cull_prepare_depth;
+static struct {uint64_t calls,us,worst;unsigned samples;uint32_t random;} cull_lookup[4]={{.random=0x7ab451c3u},{.random=0x31502fadu},{.random=0x65c981b7u},{.random=0xa1d45763u}};
+enum { RIO_PHASE_REGISTER_TREE=35, RIO_PHASE_CULL_PREPARE=39, RIO_PHASE_LOOKUP_BASE=42, RIO_PHASE_NATIVE_TID=46, RIO_PHASE_COUNT=47 };
+static RioPhaseTotals phase_window[RIO_PHASE_COUNT];
+// Only the frame thread uses this slot, reset at the start of each frame.
+// The first native lookup still initializes/reads real TLS. Every worker
+// lookup continues through the original implementation.
+static struct {uintptr_t value;unsigned valid;uint64_t hits,fills,outside_hits;} frame_thread_id;
+static void sequential_id_frame_begin(void){frame_thread_id.valid=0;}
+static uintptr_t sequential_id_call(NativeCall original,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+ if(!gangstar_wait_is_main())return original(a,b,c,d);
+ if(frame_thread_id.valid){++frame_thread_id.hits;if(!cull_prepare_depth)++frame_thread_id.outside_hits;return frame_thread_id.value;}
+ uintptr_t result=original(a,b,c,d);++frame_thread_id.fills;
+ if(result){frame_thread_id.value=result;frame_thread_id.valid=1;}
+ return result;
+}
+static int native_probe_needed(unsigned i) {
+#ifdef GANGSTAR_DETAILED_RENDER_PROFILE
+ (void)i;return 1;
+#else
+ // Early wrappers also implement archive/audio/preload fixes. Keep those
+ // and the native thread-ID cache; omit timing-only engine/lock hooks.
+ return i<PHASE_BASE || i==PHASE_BASE+RIO_PHASE_NATIVE_TID;
+#endif
+}
+static uintptr_t phase_call(unsigned phase,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+ struct Probe *p=&probes[PHASE_BASE+phase];
+ if(phase==RIO_PHASE_NATIVE_TID)return sequential_id_call(p->original,a,b,c,d);
+ if(!gangstar_wait_is_main())return p->original(a,b,c,d);
+ if(phase>=RIO_PHASE_LOOKUP_BASE) {
+  unsigned kind=phase-RIO_PHASE_LOOKUP_BASE;
+  if(!cull_prepare_depth)return p->original(a,b,c,d);
+  ++cull_lookup[kind].calls;
+  if(!rio_render_choose(&cull_lookup[kind].random))return p->original(a,b,c,d);
+  uint64_t began=sceKernelGetProcessTimeWide();
+  uintptr_t result=p->original(a,b,c,d);
+  uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+  ++cull_lookup[kind].samples;cull_lookup[kind].us+=elapsed;
+  if(elapsed>cull_lookup[kind].worst)cull_lookup[kind].worst=elapsed;
+  return result;
+ }
+ // Snapshot identities before native code can release the referenced scene.
+ // These offsets are the same camera/culler/root fields read by the verified
+ // registerSceneNodes prologue/body. Metadata only; never reused for drawing.
+ uintptr_t register_root=0,register_camera=0,register_culler=0;
+ if(phase==RIO_PHASE_REGISTER_TREE && a && b) {
+  register_camera=*(uintptr_t *)(a+0xd8);
+  if(register_camera) {
+   register_culler=*(uintptr_t *)(a+0x28);
+   if(register_culler)register_root=*(uintptr_t *)b;
+  }
+ }
+ int slot=rio_phase_enter(&phase_stack);
+ if(phase==RIO_PHASE_CULL_PREPARE)++cull_prepare_depth;
+ uint64_t began=sceKernelGetProcessTimeWide();
+ uintptr_t result=p->original(a,b,c,d);
+ uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+ if(phase==RIO_PHASE_CULL_PREPARE)--cull_prepare_depth;
+ rio_phase_leave(&phase_stack,&phase_window[phase],slot,elapsed);
+ if(phase==RIO_PHASE_REGISTER_TREE)rio_registration_record(&registration_profile,a,register_root,register_camera,register_culler,elapsed);
+ p->us+=elapsed;++p->calls;
+ return result;
+}
+#define PHASE_WRAPPER(N) static uintptr_t phase_##N(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {return phase_call(N,a,b,c,d);}
+PHASE_WRAPPER(0) PHASE_WRAPPER(1) PHASE_WRAPPER(2) PHASE_WRAPPER(3) PHASE_WRAPPER(4)
+PHASE_WRAPPER(5) PHASE_WRAPPER(6) PHASE_WRAPPER(7) PHASE_WRAPPER(8)
+PHASE_WRAPPER(9) PHASE_WRAPPER(10) PHASE_WRAPPER(11) PHASE_WRAPPER(12) PHASE_WRAPPER(13) PHASE_WRAPPER(14) PHASE_WRAPPER(15)
+PHASE_WRAPPER(16) PHASE_WRAPPER(17) PHASE_WRAPPER(18) PHASE_WRAPPER(19) PHASE_WRAPPER(20) PHASE_WRAPPER(21)
+PHASE_WRAPPER(22) PHASE_WRAPPER(23) PHASE_WRAPPER(24) PHASE_WRAPPER(25) PHASE_WRAPPER(26) PHASE_WRAPPER(27) PHASE_WRAPPER(28) PHASE_WRAPPER(29)
+PHASE_WRAPPER(30) PHASE_WRAPPER(31) PHASE_WRAPPER(32) PHASE_WRAPPER(33) PHASE_WRAPPER(34) PHASE_WRAPPER(35) PHASE_WRAPPER(36) PHASE_WRAPPER(37) PHASE_WRAPPER(38) PHASE_WRAPPER(39) PHASE_WRAPPER(40) PHASE_WRAPPER(41) PHASE_WRAPPER(42) PHASE_WRAPPER(43) PHASE_WRAPPER(44) PHASE_WRAPPER(45) PHASE_WRAPPER(46)
 static NativeCall wrappers[] = {probe_0, probe_1, probe_2, probe_3, probe_4, probe_5, probe_6, probe_7,
     probe_8, probe_9, probe_10, probe_11, probe_12, probe_13, probe_14, probe_15, probe_16, probe_17, probe_18, probe_19, probe_20, probe_21, probe_22, probe_23, probe_24, probe_25, probe_26, probe_27, probe_28, probe_29, probe_30, probe_31, probe_32, probe_33, probe_34, probe_35, probe_36, (NativeCall)probe_37, (NativeCall)probe_38,probe_39,probe_40,probe_41,probe_42,probe_43,probe_44,probe_45,probe_46
 #ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
     ,probe_47,probe_48,probe_49
 #endif
+    ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46
 };
 _Static_assert(sizeof(wrappers)/sizeof(*wrappers)==sizeof(probes)/sizeof(*probes), "Native probe wrapper count");
 #endif
 
+void gangstar_native_phase_window_report(void) {
+#ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
+ gangstar_render_report();
+#ifndef GANGSTAR_DETAILED_RENDER_PROFILE
+ l_info("RIO_THREAD_ID_CACHE scope=frame_main hits=%llu native_fills=%llu",
+  (unsigned long long)frame_thread_id.hits,(unsigned long long)frame_thread_id.fills);
+ frame_thread_id.hits=frame_thread_id.fills=frame_thread_id.outside_hits=0;
+ return;
+#endif
+ l_info("RIO_THREAD_ID_CACHE scope=frame_main hits=%llu native_fills=%llu outside_cull_hits=%llu",
+  (unsigned long long)frame_thread_id.hits,(unsigned long long)frame_thread_id.fills,(unsigned long long)frame_thread_id.outside_hits);
+ frame_thread_id.hits=frame_thread_id.fills=frame_thread_id.outside_hits=0;
+ static const char *cull_kinds[]={"grid","segment","read_lock","read_unlock"};
+ for(unsigned i=0;i<4;++i) {
+  l_info("RIO_CULL_LOOKUP kind=%s calls=%llu samples=%u sampled_us=%llu worst_sample_us=%llu",
+   cull_kinds[i],(unsigned long long)cull_lookup[i].calls,cull_lookup[i].samples,
+   (unsigned long long)cull_lookup[i].us,(unsigned long long)cull_lookup[i].worst);
+  cull_lookup[i].calls=cull_lookup[i].us=cull_lookup[i].worst=0;cull_lookup[i].samples=0;
+ }
+ for(unsigned i=0;i<registration_profile.used;++i) {
+  RioRegistrationPass *p=&registration_profile.passes[i];
+  l_info("RIO_REGISTER_PASS manager=0x%x root=0x%x camera=0x%x culler=0x%x calls=%u elapsed_us=%llu",
+   (unsigned)p->manager,(unsigned)p->root,(unsigned)p->camera,(unsigned)p->culler,p->calls,(unsigned long long)p->us);
+ }
+ if(registration_profile.dropped)l_info("RIO_REGISTER_PASS dropped=%u",registration_profile.dropped);
+ registration_profile=(RioRegistrationProfile){0};
+ static uint64_t previous_wall,previous_cpu;
+ SceKernelThreadInfo thread={.size=sizeof(thread)};
+ uint64_t wall=sceKernelGetProcessTimeWide();
+ if(!sceKernelGetThreadInfo(sceKernelGetThreadId(),&thread)) {
+  if(previous_wall)l_info("RIO_PHASE_CPU wall_us=%llu run_clocks=%llu",
+   (unsigned long long)(wall-previous_wall),(unsigned long long)(thread.runClocks-previous_cpu));
+  previous_wall=wall;previous_cpu=thread.runClocks;
+ }
+ for(unsigned i=0;i<RIO_PHASE_COUNT;++i) {
+  RioPhaseTotals *t=&phase_window[i];
+  l_info("RIO_PHASE_WINDOW phase=%s calls=%u inclusive_us=%llu self_us=%llu worst_us=%llu",
+   probes[PHASE_BASE+i].label,t->calls,(unsigned long long)t->inclusive,
+   (unsigned long long)t->self,(unsigned long long)t->worst);
+  *t=(RioPhaseTotals){0};
+ }
+#endif
+}
 void gangstar_native_reuse_frame(unsigned frame) {
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     reuse_frame = frame;
@@ -1169,6 +1363,7 @@ GangstarNativePerf gangstar_native_stats(void) {
 }
 void gangstar_native_startup_frame(void) {
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
+    sequential_id_frame_begin();
     asset_count = asset_dropped = 0;
     for (unsigned i = 0; i < sizeof(probes) / sizeof(*probes); ++i) {
         probes[i].us = 0; probes[i].calls = 0;
@@ -1340,6 +1535,9 @@ static void install_weapon_guard(void) {
     l_info("Gangstar weapon guard: empty current weapon handled");
 }
 void gangstar_native_startup_install(void) {
+#ifdef GANGSTAR_SELECTIVE_VERTEX_COPY
+    gangstar_vertex_scratch_install();
+#endif
     install_stream_guard();
     install_weapon_guard();
 #if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_ARCHIVE_ROUTE_CACHE)
@@ -1396,6 +1594,7 @@ void gangstar_native_startup_install(void) {
     if (pak_vtable) pak_vtable += 8;
 #endif
     for (unsigned i = 0; i < sizeof(probes) / sizeof(*probes); ++i) {
+        if(!native_probe_needed(i))continue;
         struct Probe *p = &probes[i];
         uintptr_t address = so_symbol(&so_mod, p->symbol);
         if (!address || (address & 3) || address < so_mod.text_base ||

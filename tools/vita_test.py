@@ -356,6 +356,9 @@ def main():
     parser.add_argument("--log-only", action="store_true", help="Read startup log without downloading cores")
     parser.add_argument("--hud-textures", action="store_true", help="Collect ETC1 atlas dumps from a HUD trace")
     parser.add_argument("--hud-trace", action="store_true", help="Request and collect one frame of HUD draw inputs")
+    parser.add_argument("--existing-hud-trace", action="store_true", help="Download the last completed draw trace without requesting another frame")
+    parser.add_argument("--verify-installed", action="store_true", help="Read and hash installed executable against the local build without modifying the Vita")
+    parser.add_argument("--shader-recipes", action="store_true", help="Collect original saved GLSL warmup pairs for draw diagnosis")
     parser.add_argument("--shaders", action="store_true", help="Collect dumped original shader sources")
     parser.add_argument("--display-screenshot", action="store_true", help="Capture current screen with Vita PS+Start and collect the new photo")
     parser.add_argument("--screenshots", action="store_true", help="Collect startup framebuffer PNGs")
@@ -448,16 +451,32 @@ def main():
         folder = ROOT / "work/hardware" / time.strftime("companion-%Y%m%d-%H%M%S")
         folder.mkdir(parents=True, exist_ok=False)
         if args.hud_trace:
+            try:
+                ftp.delete(DATA + "/hud-trace.done")
+            except ftplib.error_perm as exc:
+                if not str(exc).startswith("550"):
+                    raise
             ftp.storbinary("STOR " + DATA + "/hud-trace.request", io.BytesIO(b"one frame\n"))
             for attempt in range(30):
                 time.sleep(0.5)
-                if "hud-trace.request" not in ftp.nlst(DATA + "/"):
-                    time.sleep(0.5)
+                if "hud-trace.done" in ftp.nlst(DATA + "/"):
+                    # The game closes the full trace before publishing done.
                     (folder / "hud-trace.log").write_bytes(download(ftp, DATA + "/hud-trace.log"))
                     print("HUD trace:", folder / "hud-trace.log")
                     break
             else:
-                raise RuntimeError("HUD trace request was not consumed")
+                raise RuntimeError("HUD trace did not finish (requires a build with completion markers)")
+        if args.verify_installed:
+            installed = download(ftp, APP + "/eboot.bin")
+            expected = (ROOT / "work/build/eboot.bin").read_bytes()
+            verification = {"installed_sha256": hashlib.sha256(installed).hexdigest(),
+                            "local_sha256": hashlib.sha256(expected).hexdigest(),
+                            "matches": installed == expected, "bytes": len(installed)}
+            (folder / "installed-executable.json").write_text(json.dumps(verification, indent=2) + "\n")
+            print("Installed executable:", verification)
+        if args.existing_hud_trace:
+            (folder / "hud-trace.log").write_bytes(download(ftp, DATA + "/hud-trace.log"))
+            print("Existing HUD trace:", folder / "hud-trace.log")
         if args.hud_textures:
             target = folder / "hud-textures"
             target.mkdir()
@@ -468,6 +487,21 @@ def main():
             print("HUD texture dumps:", target)
         if args.display_screenshot:
             display_capture(ftp, args, folder)
+        if args.shader_recipes:
+            remote = DATA + "/shader-warmup-v1"
+            target = folder / "shader-recipes"
+            target.mkdir()
+            entries = ftp.nlst(remote + "/")
+            copied = 0
+            for entry in entries:
+                name = entry.rsplit("/", 1)[-1]
+                if len(name) != 44 or not name.endswith(".rsw") or any(c not in "0123456789abcdefABCDEF" for c in name[:-4]):
+                    continue
+                (target / name).write_bytes(download(ftp, remote + "/" + name))
+                copied += 1
+                if copied % 20 == 0:
+                    print("Shader recipes collected:", copied, flush=True)
+            print("Shader recipes:", copied, target)
         if args.shaders:
             remote = DATA + "/shader-diagnostics"
             target = folder / "shader-diagnostics"

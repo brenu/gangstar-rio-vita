@@ -16,12 +16,22 @@ static void step(Machine *m) {
         uint32_t address = m->r[13] - 4 * count;
         for (unsigned i = 0; i < 16; ++i) if (word & (1u << i)) { m->memory[address / 4] = m->r[i]; address += 4; }
         m->r[13] -= 4 * count;
-    } else if(word==0xed2d8b02) {
-        m->r[13]-=8;
-        m->memory[m->r[13]/4]=(uint32_t)m->d[8];
-        m->memory[m->r[13]/4+1]=(uint32_t)(m->d[8]>>32);
+    } else if(word==0xed2d8b02 || word==0xed2d8b04 || word==0xed2d8b06) {
+        unsigned words=word&255;m->r[13]-=words*4;
+        for(unsigned i=0;i<words/2;++i) {
+            m->memory[m->r[13]/4+i*2]=(uint32_t)m->d[8+i];
+            m->memory[m->r[13]/4+i*2+1]=(uint32_t)(m->d[8+i]>>32);
+        }
     } else if ((word == 0xe2514000 || word == 0xe2513000)) { m->r[rd] = m->r[1]; m->zero = m->r[rd] == 0; }
-    else if (word == 0xe3530000) m->zero = m->r[3] == 0;
+    else if(word==0xe3073b54)m->r[3]=0x7b54;
+    else if(word==0xe3403001)m->r[3]=(m->r[3]&0xffff)|0x10000;
+    else if(word==0xe1c022f0) { // strd r2,r3,[r0,#32], StateMachine timestamp
+        m->memory[(m->r[0]+32)/4]=m->r[2];
+        m->memory[(m->r[0]+36)/4]=m->r[3];
+    }
+    else if(word==0xe2801f83)m->r[1]=m->r[0]+524; // add r1,r0,#0x20c
+    else if(word==0xe1530001)m->zero=m->r[3]==m->r[1];
+    else if (word == 0xe3530000 || word == 0xe3510000 || word == 0xe3500000) m->zero = m->r[(word>>16)&15] == 0;
     else if ((word & 0xfffff000) == 0xe24dd000) m->r[13] -= word & 255;
     else if ((word & 0xfff00000) == 0xe5d00000) {
         unsigned address = m->r[(word >> 16) & 15] + (word & 4095);
@@ -34,6 +44,45 @@ static void step(Machine *m) {
 }
 int main(void) {
     const uint32_t prologues[][2] = {
+        {0xe92d4070,0xe59f4080},
+        {0xe92d47f0,0xe1a04000},
+        {0xe92d4010,0xe1a04000},
+        {0xe92d41f0,0xe1a06002},
+        {0xe92d4010,0xe24dd010},
+        {0xe92d4ff0,0xed2d8b04},
+        {0xe92d4ff0,0xe2801f83},
+        {0xe92d41f0,0xe3a03000},
+        {0xe92d4ff0,0xe59110d8},
+        {0xe5900020,0xe3500000},
+        {0xe92d4ff0,0xe24dd02c},
+        {0xe92d4ff0,0xe24dd0b4},
+        {0xe92d4ff0,0xe24dd0b4},
+        {0xe92d47f0,0xed2d8b02},
+        {0xe92d4070,0xe59030d8},
+        {0xe92d4070,0xe59030d8},
+        {0xe92d40f0,0xe24dd014},
+        {0xe92d4ff0,0xed2d8b06},
+        {0xe92d41f0,0xe1a05002},
+        {0xe92d4ff0,0xed2d8b02},
+        {0xe92d4ff0,0xed2d8b02},
+        {0xe92d4ff0,0xe5902090},
+        {0xe92d47f0,0xe59f4180},
+        {0xe92d45f0,0xe24dd014},
+        {0xe92d4010,0xe5903014},
+        {0xe92d4ff0,0xed2d8b02},
+        {0xe92d45f0,0xe24dd014},
+        {0xe92d4ff0,0xe59f4dcc},
+        {0xe92d4070,0xe5903014},
+        {0xe92d47f0,0xe1a04000},
+        {0xe92d4010,0xe5903014},
+        {0xe92d4070,0xe1c022f0},{0xe92d4070,0xe59f406c},
+        {0xe92d4030,0xe5902000},{0xe5903000,0xe1530001},
+        {0xe92d4ff0,0xed2d8b02},{0xe3073b54,0xe3403001},
+        {0xe92d4ff0,0xe5909010},{0xe92d47f0,0xe24dd008},
+        {0xe92d4ff0,0xe59f4e84},{0xe92d41f0,0xe3510000},
+        {0xe92d4010,0xe1a04000},{0xe92d41f0,0xe59f70cc},
+        {0xe92d41f0,0xe1a05000},{0xe92d4ff0,0xed2d8b06},
+        {0xe59f042c,0xe59f142c},{0xe92d41f0,0xed2d8b02},{0xe92d4ff0,0xed2d8b04},
         {0xe92d4ff0,0xe1a04000},{0xe92d45f0,0xe24dd01c},
         {0xe92d4070,0xe59f503c},{0xe59f3098,0xe59f2098},
         {0xe5d23128,0xe92d4070}, // guarded weapon swap
@@ -67,7 +116,7 @@ int main(void) {
         original.r[13] = 0xf000; original.r[15] = 0x1000;
         original.r[0] = 0x6000; original.memory[(0x6000 + 196) / 4] = 0xabcdef12;
         if (scenario) { original.r[1] = 0; original.r[3] = 0; }
-        if (prologues[p][1] == 0xe5913008 || prologues[p][1] == 0xe5913000) {
+        if (prologues[p][1] == 0xe59110d8 || prologues[p][1] == 0xe5913008 || prologues[p][1] == 0xe5913000) {
             original.r[1] = 0x7000; original.memory[0x7000 / 4] = 0x87654321; original.memory[0x7008 / 4] = 0xabcdef34;
         }
         if(prologues[p][0]==0xe5d23128) {original.r[2]=0x7000;original.memory[(0x7000+0x128)/4]=0x01020304;}
@@ -84,11 +133,15 @@ int main(void) {
         for (unsigned i = 0; i < 3; ++i) step(&relocated);
         assert(!memcmp(original.r, relocated.r, sizeof(original.r)));
         assert(original.zero == relocated.zero);
+        assert(!memcmp(&original.memory[0x6020/4],&relocated.memory[0x6020/4],8));
         assert(!memcmp(original.d,relocated.d,sizeof(original.d)));
         assert(!memcmp(&original.memory[0xee00 / 4], &relocated.memory[0xee00 / 4], 512));
     }
     uint32_t code[6], bad[] = {0xeb000000, 0xe3a02000}, literal[] = {0, 0};
     assert(!rio_startup_trampoline(code, 0x1000, bad, literal));
     bad[0] = 0xe59ff000; assert(!rio_startup_trampoline(code, 0x1000, bad, literal));
+    // Keep STRD support narrow: reject nearby unverified addressing forms.
+    bad[0]=0xe1c022f8;assert(!rio_startup_trampoline(code,0x1000,bad,literal));
+    bad[0]=0xe1cf22f0;assert(!rio_startup_trampoline(code,0x1000,bad,literal));
     puts("Startup trampolines: all verified prologues preserve registers/flags/stack/literals and return PC; unsupported instructions rejected");
 }
