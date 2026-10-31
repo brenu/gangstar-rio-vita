@@ -5,6 +5,12 @@ static unsigned count,types[128],states[128];
 static void emit(void *unused,unsigned type,unsigned state){(void)unused;assert(count<128);types[count]=type;states[count++]=state;}
 static void reset(void){count=0;}
 int main(void){
+ for(int hud=0;hud<2;++hud)for(int fallen=0;fallen<2;++fallen)
+ for(int blocked=0;blocked<2;++blocked)for(int vehicle=0;vehicle<2;++vehicle) {
+  int eligible=rio_recovery_available(hud,fallen,blocked,vehicle);
+  assert(eligible==(hud || (fallen && !blocked && !vehicle)));
+  assert(rio_triangle_action(1,eligible,1,1)==(eligible?21:4));
+ }
  const unsigned mapped_touch[]={0,2,9,10,11,13,16,19,20,21,23,26};
  for(unsigned i=0;i<sizeof(mapped_touch)/sizeof(*mapped_touch);++i)
   assert(rio_touch_button_mapped(mapped_touch[i]));
