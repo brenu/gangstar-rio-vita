@@ -1,3 +1,4 @@
+#include "gangstar_diagnostics.h"
 #include "gangstar_audio_poll.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
@@ -203,9 +204,9 @@ static int gangstar_profile_access(const char *path, int mode) {
         0, 0, result, "access");
     return result;
 }
-static uint64_t audio_io_begin(void) { return rio_audio_scope_active()?sceKernelGetProcessTimeWide():0; }
+static uint64_t audio_io_begin(void) { return rio_audio_scope_active()?rio_diagnostic_clock():0; }
 static void audio_io_end(unsigned kind,uint64_t began) {
-    if(began) { int saved=errno;rio_audio_phase(kind,sceKernelGetProcessTimeWide()-began);errno=saved; }
+    if(began) { int saved=errno;rio_audio_phase(kind,rio_diagnostic_clock()-began);errno=saved; }
 }
 static int gangstar_audio_fseeko(FILE *stream,off_t offset,int origin) {
     uint64_t began=audio_io_begin();int result=fseeko(stream,offset,origin);

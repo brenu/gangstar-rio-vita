@@ -198,6 +198,7 @@ static int gangstar_main(void) {
     state_changed(&jni, game_class, JNI_TRUE);
     resize(&jni, game_class, 960, 544);
     l_info("Entering Gangstar frame loop");
+#ifndef GANGSTAR_RELEASE_BUILD
     GangstarPerfWindow performance = {0};
     struct { unsigned frame; uint64_t total, read, upload, cache, etc_free, etc_alloc, etc_swizzle, etc_setup; unsigned etc_calls, etc_reserved, etc_reused, etc_fallback, etc_migrated, etc_no_room, upload_width, upload_height;
         GangstarNativePerf native; GangstarWaitPerf waits; GangstarWaitEvent longest[3]; } hitches[64];
@@ -205,7 +206,9 @@ static int gangstar_main(void) {
     unsigned slow_frames = 0, very_slow_frames = 0;
     uint64_t last_swap_end=0, outside_us=0, outside_worst=0, last_report_us=0;
     SceUID game_thread = sceKernelGetThreadId();
+#endif
     for (unsigned frame = 0; ; ++frame) {
+#ifndef GANGSTAR_RELEASE_BUILD
         uint64_t frame_begin = sceKernelGetProcessTimeWide();
         if (last_swap_end && frame_begin>=last_swap_end) {
             uint64_t gap=frame_begin-last_swap_end;
@@ -215,6 +218,7 @@ static int gangstar_main(void) {
         int thread_sample = frame < 32 ? sceKernelGetThreadInfo(game_thread, &thread_before) : -1;
         gangstar_io_frame_begin();
         gangstar_asset_frame();
+#endif
         gangstar_wait_frame();
         gangstar_native_startup_frame();
         gangstar_native_reuse_frame(frame);
@@ -226,13 +230,18 @@ static int gangstar_main(void) {
         // q.java resets alpha as well as RGB before every native frame.
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#ifndef GANGSTAR_RELEASE_BUILD
         uint64_t step_begin = sceKernelGetProcessTimeWide();
+#endif
         step(&jni, game_class);
         gangstar_jni_strings_frame_end();
         gangstar_district_poll();
 
+#ifndef GANGSTAR_RELEASE_BUILD
         uint64_t swap_begin = sceKernelGetProcessTimeWide();
+#endif
         gl_swap();
+#ifndef GANGSTAR_RELEASE_BUILD
         uint64_t swap_end = sceKernelGetProcessTimeWide();
         last_swap_end=swap_end;
         GangstarFrameIo frame_io = gangstar_io_frame_end();
@@ -388,6 +397,7 @@ static int gangstar_main(void) {
                 frame + 1, (unsigned)memory.uordblks,
                 (unsigned)memory.fordblks, (unsigned)memory.arena);
         }
+#endif
         sceKernelPowerTick(0);
     }
     return 0;

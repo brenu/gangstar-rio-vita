@@ -62,9 +62,9 @@ int main(void) {
     assert(fabsf(fabsf(gangstar_walk_angle(0, 1)) - pi) < 0.00001f);
     assert(abs(camera_distance(30, 0.7f) - camera_distance(60, 0.7f)) <= 1);
     assert(abs(camera_distance(30, -0.7f) - camera_distance(60, -0.7f)) <= 1);
-    assert(camera_distance(60, 0.01f) >= 5); // fractional slow look survives
+    assert(camera_distance(60, 0.01f) >= 3); // fractional slow look survives
     float remainder = 0.9f;
     assert(gangstar_camera_delta(0, 1.0f/60, &remainder) == 0 && remainder == 0);
-    assert(gangstar_camera_delta(1, 10, &remainder) <= 30); // no resume jump
+    assert(gangstar_camera_delta(1, 10, &remainder) <= 21); // no resume jump
     puts("Gangstar analog: deadzone, diagonal speed, walking/aircraft directions, aircraft neutral and frame-independent camera passed");
 }

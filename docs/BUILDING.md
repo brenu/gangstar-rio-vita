@@ -121,3 +121,22 @@ These check portable code and build-profile defaults. They are useful before sub
 - **A header or library cannot be found:** rerun `python3 tools/preflight.py` and install the reported Vita dependency.
 - **An old build behaves differently:** check for environment overrides and follow the clean-build steps above.
 - **You need help:** report the first compiler/linker error and your SDK version. Do not upload game files or the entire `work/` directory.
+
+### Release and diagnostics
+
+`bash build.sh` now builds Release at `-O3`, with routine logging, frame/stall
+reports, sampled material timing, upload-stage measurements and ADPCM comparison
+disabled. The tested speedhacks, buffer protections, audio fast decoding/chunking,
+caches, partial lightmap reads, controls and crash fixes remain enabled. Warnings
+and errors are retained in `port.log`.
+
+For a diagnostic build with timing and verbose logs:
+
+```sh
+GANGSTAR_RUNTIME_DIAGNOSTICS=ON bash build.sh
+```
+
+This also defaults decoder verification and upload-stage measurements to ON;
+explicit environment overrides still take precedence. The option named
+`GANGSTAR_NATIVE_STARTUP_PROFILE` must remain ON because it also installs required
+functional hooks; release mode filters out its measurement-only hooks.

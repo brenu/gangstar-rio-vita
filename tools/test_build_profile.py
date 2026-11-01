@@ -22,6 +22,7 @@ def values(overrides):
 
 actual = values({})
 required = {
+    'GANGSTAR_RUNTIME_DIAGNOSTICS':'OFF', 'GANGSTAR_NATIVE_ADPCM_VERIFY':'OFF', 'GANGSTAR_UPLOAD_STAGES':'OFF',
     'GANGSTAR_ARCHIVE_CACHE_MIB': '32', 'GANGSTAR_ARCHIVE_BLOCK_KIB': '32',
     'GANGSTAR_ETC1_RESERVE_MIPS': 'ON', 'GANGSTAR_AUDIO_DIRECT_PATHS': 'ON',
     'GANGSTAR_ARCHIVE_VIRTUAL_CURSOR': 'ON', 'GANGSTAR_NATIVE_IMA_FAST': 'ON',
@@ -39,7 +40,14 @@ print(f'Build profile: all {len(options)} options supplied, preferred defaults a
 preview = subprocess.check_output(['bash', str(root / 'build.sh'), '--show-config'], env=env, text=True)
 selected = dict(line[2:].split('=', 1) for line in preview.splitlines())
 assert all(selected[key] == value for key, value in actual.items())
-assert selected['CMAKE_BUILD_TYPE'] == 'Debug' and selected['USE_SCELIBC_IO'] == 'OFF'
+assert selected['CMAKE_BUILD_TYPE'] == 'Release' and selected['USE_SCELIBC_IO'] == 'OFF'
+
+diagnostic_preview = subprocess.check_output(['bash', str(root / 'build.sh'), '--show-config'],
+    env={**env,'GANGSTAR_RUNTIME_DIAGNOSTICS':'ON'}, text=True)
+diagnostic = dict(line[2:].split('=',1) for line in diagnostic_preview.splitlines())
+assert diagnostic['CMAKE_BUILD_TYPE']=='Debug'
+assert diagnostic['GANGSTAR_NATIVE_ADPCM_VERIFY']=='ON'
+assert diagnostic['GANGSTAR_UPLOAD_STAGES']=='ON'
 
 import importlib.util
 import tempfile

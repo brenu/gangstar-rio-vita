@@ -1,3 +1,4 @@
+#include "gangstar_diagnostics.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2022      Rinnegatamante
@@ -234,10 +235,10 @@ int pthread_mutex_lock_soloader(pthread_mutex_t_bionic *mutex)
     int observed_owner=atomic_load_explicit(&real->owner,memory_order_relaxed);
     uintptr_t observed_site=atomic_load_explicit(&real->acquire_site,memory_order_relaxed);
     if(observed_owner!=atomic_load_explicit(&real->owner,memory_order_relaxed))observed_site=0;
-    uint64_t audio_began=rio_audio_scope_active()?sceKernelGetProcessTimeWide():0;
+    uint64_t audio_began=rio_audio_scope_active()?rio_diagnostic_clock():0;
     uint64_t queued_began=0;
     int queued_result=gangstar_mutex_lock(real,&queued_mutex_ops,&queued_began);
-    if(audio_began)rio_audio_phase(RIO_AUDIO_LOCK,sceKernelGetProcessTimeWide()-audio_began);
+    if(audio_began)rio_audio_phase(RIO_AUDIO_LOCK,rio_diagnostic_clock()-audio_began);
     if(!queued_result && real->depth==1)
         atomic_store_explicit(&real->acquire_site,(uintptr_t)__builtin_return_address(0),memory_order_relaxed);
     uint64_t waited=gangstar_wait_end_context(RIO_WAIT_MUTEX,queued_began,(uintptr_t)__builtin_return_address(0),
@@ -362,7 +363,7 @@ static int condition_signal(pthread_cond_t_bionic *cond, int all) {
     struct GangstarCondition *real = cond->real_ptr;
     while (real->first) {
         struct GangstarWaiter *waiter = real->first;
-        uint64_t signal_time = waiter->tracing ? sceKernelGetProcessTimeWide() : 0;
+        uint64_t signal_time = waiter->tracing ? rio_diagnostic_clock() : 0;
         int signal_thread = waiter->tracing ? sceKernelGetThreadId() : 0;
         result = sync_result(sceKernelSignalSema(waiter->semaphore, 1));
         if (result) break;
@@ -397,7 +398,7 @@ static int condition_wait(pthread_cond_t_bionic *cond, pthread_mutex_t_bionic *m
     else real->first = &waiter;
     real->last = &waiter;
     real->waiters++;
-    uint64_t published = waiter.tracing ? sceKernelGetProcessTimeWide() : 0;
+    uint64_t published = waiter.tracing ? rio_diagnostic_clock() : 0;
     // Publish the waiter before releasing the predicate mutex. Signals can
     // arrive before WaitSema: the semaphore retains that wakeup.
     pthread_mutex_unlock_soloader(mutex);
@@ -417,7 +418,7 @@ static int condition_wait(pthread_cond_t_bionic *cond, pthread_mutex_t_bionic *m
         gettimeofday(&now, NULL);
         if (now.tv_sec > deadline->tv_sec || (now.tv_sec == deadline->tv_sec && now.tv_usec * 1000 >= deadline->tv_nsec)) break;
     } while (1);
-    uint64_t resumed = waiter.tracing ? sceKernelGetProcessTimeWide() : 0;
+    uint64_t resumed = waiter.tracing ? rio_diagnostic_clock() : 0;
     pthread_mutex_lock(&registry_lock);
     if (!waiter.signaled) {
         struct GangstarWaiter *previous = NULL, *entry = real->first;
@@ -431,10 +432,10 @@ static int condition_wait(pthread_cond_t_bionic *cond, pthread_mutex_t_bionic *m
     real->waiters--;
     sceKernelDeleteSema(waiter.semaphore);
     pthread_mutex_unlock(&registry_lock);
-    uint64_t relock_started = waiter.tracing ? sceKernelGetProcessTimeWide() : 0;
+    uint64_t relock_started = waiter.tracing ? rio_diagnostic_clock() : 0;
     int relocked = pthread_mutex_lock_soloader(mutex);
     if (waiter.tracing) {
-        uint64_t end = sceKernelGetProcessTimeWide();
+        uint64_t end = rio_diagnostic_clock();
         *trace = (GangstarConditionTrace){
             .setup_us=published-setup_started,
             .before_signal_us=waiter.signaled && waiter.signal_time>=published ? waiter.signal_time-published : 0,

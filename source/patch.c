@@ -144,6 +144,12 @@ static atomic_uint audio_entered, audio_locked, audio_filled;
 static void gangstar_audio_callback(const void *queue, void *driver) {
     (void)queue;
     if (!driver) return;
+#ifdef GANGSTAR_RELEASE_BUILD
+    gangstar_vox_lock((unsigned char *)driver + 4);
+    gangstar_vox_fill(driver);
+    gangstar_vox_unlock((unsigned char *)driver + 4);
+    return;
+#else
     atomic_fetch_add_explicit(&audio_entered, 1, memory_order_relaxed);
     uint64_t started = sceKernelGetProcessTimeWide();
     // Exact native CallbackOSL sequence: lock driver mutex, refill, unlock.
@@ -172,6 +178,7 @@ static void gangstar_audio_callback(const void *queue, void *driver) {
     unsigned elapsed = (unsigned)(sceKernelGetProcessTimeWide() - started);
     old = atomic_load(&audio_worst_us);
     while (elapsed > old && !atomic_compare_exchange_weak(&audio_worst_us, &old, elapsed)) {}
+#endif
 }
 
 void gangstar_audio_report(void) {

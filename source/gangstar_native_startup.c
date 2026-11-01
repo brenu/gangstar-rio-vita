@@ -1,3 +1,4 @@
+#include "gangstar_diagnostics.h"
 #include "gangstar_registration_profile.h"
 #include "gangstar_audio_poll.h"
 #include "gangstar_phase_timing.h"
@@ -94,7 +95,7 @@ static struct Probe {
     {"_ZN3vox18DecoderMSWavCursor6DecodeEPvi", "Decode_WAV", {0xe92d4010,0xe5903024}, NULL,0,0},
     {"_ZN3vox19DecoderNativeCursor6DecodeEPvi", "Decode_native", {0xe92d4070,0xe1a04000}, NULL,0,0},
     {"_ZN3vox22DecoderStbVorbisCursor6DecodeEPvi", "Decode_vorbis", {0xe92d4070,0xe1a04000}, NULL,0,0}
-#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
     ,{"_ZN3vox26VoxMSWavSubDecoderIMAADPCM11DecodeBlockEPv", "Block_IMA", {0xe92d4ff0,0xe24dd06c}, NULL,0,0}
     ,{"_ZN3vox25VoxMSWavSubDecoderMSADPCM11DecodeBlockEPv", "Block_MS", {0xe92d4ff0,0xe5902008}, NULL,0,0}
     ,{"_ZN3vox26VoxMSWavSubDecoderIMAADPCM4SeekEj", "IMA_seek", {0xe92d41f0,0xe1a05001}, NULL,0,0}
@@ -170,12 +171,12 @@ static struct Probe {
 // never temporarily restore the function's entry instructions around a call.
 #define PROBE(N) \
 static __attribute__((noinline)) uintptr_t probe_##N(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { \
-    uint64_t audio_began = (N>=9 && N<=12 && rio_audio_scope_active()) ? sceKernelGetProcessTimeWide() : 0; \
+    uint64_t audio_began = (N>=9 && N<=12 && rio_audio_scope_active()) ? rio_diagnostic_clock() : 0; \
     uint64_t began = gangstar_wait_begin(); \
     uintptr_t result = probes[N].original(a, b, c, d); \
     uint64_t elapsed = gangstar_wait_end(RIO_WAIT_NATIVE, began, (uintptr_t)__builtin_return_address(0), \
         a, 0, (int)result, probes[N].label); \
-    if (audio_began) rio_audio_phase(RIO_AUDIO_FILE+N-9,sceKernelGetProcessTimeWide()-audio_began); \
+    if (audio_began) rio_audio_phase(RIO_AUDIO_FILE+N-9,rio_diagnostic_clock()-audio_began); \
     if (began) { probes[N].us += elapsed; ++probes[N].calls; } \
     return result; \
 }
@@ -339,7 +340,7 @@ static uintptr_t route_dispatch(uintptr_t out, uintptr_t parent, uintptr_t name,
     uintptr_t caller, uint64_t began) {
     uint64_t stamp; int all_packed;
 #ifdef GANGSTAR_AUDIO_DIRECT_PATHS
-    if (!began && rio_audio_scope_active() && pak_vtable && probes[14].original && probes[20].original &&
+    if (!gangstar_wait_is_main() && rio_audio_scope_active() && pak_vtable && probes[14].original && probes[20].original &&
         (caller==so_mod.load_addr+0x467b7c || caller==so_mod.load_addr+0x467bdc) &&
         rio_route_name((const char *)name) && route_stamp(parent,&stamp,&all_packed) && all_packed) {
         int handled=direct_path_open(out,parent,(const char *)name,extra,stamp,audio_path_indexes,NULL);
@@ -350,7 +351,7 @@ static uintptr_t route_dispatch(uintptr_t out, uintptr_t parent, uintptr_t name,
         atomic_fetch_add(&audio_path_fallback,1);
     }
 #endif
-    int eligible = began && pak_vtable && probes[14].original && probes[16].original &&
+    int eligible = gangstar_wait_is_main() && pak_vtable && probes[14].original && probes[16].original &&
         (caller == so_mod.load_addr + 0x467b7c || caller == so_mod.load_addr + 0x467bdc) &&
         rio_route_name((const char *)name) && route_stamp(parent, &stamp, &all_packed);
     if (!eligible) { if (began) ++route_skipped; return probes[15].original(out, parent, name, extra); }
@@ -379,9 +380,9 @@ static uintptr_t route_dispatch(uintptr_t out, uintptr_t parent, uintptr_t name,
     ++route_misses;
 #ifdef GANGSTAR_DIRECT_ASSET_PATHS
     if (all_packed && probes[20].original) {
-        uint64_t start=sceKernelGetProcessTimeWide();
+        uint64_t start=rio_diagnostic_clock();
         int handled=direct_path_open(out,parent,(const char *)name,extra,stamp,path_indexes,&route_cache);
-        uint64_t elapsed=sceKernelGetProcessTimeWide()-start;
+        uint64_t elapsed=rio_diagnostic_clock()-start;
         path_us+=elapsed; if (elapsed>path_worst) path_worst=elapsed;
         if (handled) return out;
     }
@@ -619,6 +620,19 @@ static void pin_report(void) {
 }
 #endif
 static uintptr_t probe_21(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    uintptr_t texture=c?*(uintptr_t *)c:0;
+    uintptr_t result=probes[21].original(a,b,c,d);
+#ifdef GANGSTAR_TEXTURE_REF_CACHE
+    if(result && texture && b && gangstar_wait_is_main()) {
+        uintptr_t *vtable=*(uintptr_t **)b;
+        unsigned size=((unsigned (*)(uintptr_t))vtable[0x20/4])(b);
+        const char *name=((const char *(*)(uintptr_t))vtable[0x28/4])(b);
+        pin_texture(texture,name,size);
+    }
+#endif
+    return result;
+#else
     uint64_t began = gangstar_wait_begin();
     GangstarAssetPerf before = began ? gangstar_asset_stats() : (GangstarAssetPerf){0};
     GangstarArchiveFrame io_before = began ? gangstar_archive_frame_stats() : (GangstarArchiveFrame){0};
@@ -663,6 +677,7 @@ static uintptr_t probe_21(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
         }
     }
     return result;
+#endif
 }
 #ifdef GANGSTAR_RESIDENT_TEXTURES
 static RioResidentPolicy resident_policy;
@@ -761,13 +776,13 @@ static struct { uintptr_t object, caller; unsigned gl_name, flags, mask, frame; 
 } gpu_release_events[64];
 static unsigned gpu_release_count, gpu_release_calls, gpu_release_empty, gpu_release_dropped;
 static __attribute__((noinline)) uintptr_t probe_32(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-    uint64_t began = sceKernelGetProcessTimeWide();
+    uint64_t began = rio_diagnostic_clock();
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     unsigned gl_name = *(unsigned *)(a + 0x60), flags = *(unsigned char *)(a + 0x38);
     int thread = sceKernelGetThreadId(), main = gangstar_wait_is_main();
     unsigned frame = main ? reuse_frame : 0;
     uintptr_t result = probes[32].original(a, b, c, d);
-    uint64_t elapsed = sceKernelGetProcessTimeWide() - began;
+    uint64_t elapsed = rio_diagnostic_clock() - began;
     if (main) { probes[32].us += elapsed; ++probes[32].calls; }
     // Separate thread-safe raw queue: no identity lookups or post-release object reads.
     // Never hold this lock across native/GL calls.
@@ -810,7 +825,7 @@ static void preload_world_sources(uintptr_t manager) {
     }
     uintptr_t *vtable=*(uintptr_t **)fs;
     NativeCall open=(NativeCall)vtable[0x0c/4];
-    uint64_t began=sceKernelGetProcessTimeWide();
+    uint64_t began=rio_diagnostic_clock();
     unsigned ready=0, missing=0, original=0, expected_bytes=0, requested=0;
     const unsigned candidates=sizeof(rio_world_texture_names)/sizeof(*rio_world_texture_names);
     gangstar_texture_source_preloading(1);
@@ -846,7 +861,7 @@ static void preload_world_sources(uintptr_t manager) {
     world_source_preload_done=ready==requested;
     l_info("RIO_SOURCE_PREWARM requested=%u ready=%u missing=%u original=%u expected_bytes=%u elapsed_us=%llu",
         requested,ready,missing,original,expected_bytes,
-        (unsigned long long)(sceKernelGetProcessTimeWide()-began));
+        (unsigned long long)(rio_diagnostic_clock()-began));
     gangstar_texture_lod_report(reuse_frame);
 }
 #endif
@@ -858,7 +873,7 @@ static uintptr_t probe_35(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
         uintptr_t manager = texture_prewarm_manager();
         int expected_phase = 0;
         if (manager && atomic_compare_exchange_strong(&texture_prewarm_done, &expected_phase, 1)) {
-            uint64_t began = sceKernelGetProcessTimeWide();
+            uint64_t began = rio_diagnostic_clock();
             unsigned returned = 0, ready = 0;
             texture_prewarm_owner = manager;
 #ifdef GANGSTAR_WORLD_SOURCE_PREWARM
@@ -879,7 +894,7 @@ static uintptr_t probe_35(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
             atomic_store(&texture_prewarm_done, 2);
             l_info("RIO_PREWARM frame=%u requested=%u returned=%u ready_at_return=%u elapsed_us=%llu",
                 reuse_frame, (unsigned)RIO_TEXTURE_PIN_TARGETS, returned, ready,
-                (unsigned long long)(sceKernelGetProcessTimeWide() - began));
+                (unsigned long long)(rio_diagnostic_clock() - began));
         }
     }
 #endif
@@ -948,18 +963,22 @@ static __attribute__((noinline)) uintptr_t probe_39(uintptr_t a,uintptr_t b,uint
     if(priority.error<0)atomic_fetch_add(&audio_sched_begin_errors,1);
     if(priority.changed)atomic_fetch_add(&audio_sched_boosted,1);
 #endif
+#ifndef GANGSTAR_RELEASE_BUILD
     SceKernelThreadInfo before={0},after={0};before.size=sizeof(before);after.size=sizeof(after);
     int before_ok=sceKernelGetThreadInfo(thread,&before);
+#endif
     RioAudioProbeScope scope;
-    rio_audio_scope_begin(&scope,a,thread,sceKernelGetProcessTimeWide());
+    rio_audio_scope_begin(&scope,a,thread,rio_diagnostic_clock());
     uintptr_t result=probes[39].original(a,b,c,d);
-    uint64_t ended=sceKernelGetProcessTimeWide();
+    uint64_t ended=rio_diagnostic_clock();
+#ifndef GANGSTAR_RELEASE_BUILD
     int after_ok=sceKernelGetThreadInfo(thread,&after);
     if(before_ok>=0 && after_ok>=0 && after.runClocks>=before.runClocks)
         rio_audio_scheduler(after.runClocks-before.runClocks,
             after.threadPreemptCount-before.threadPreemptCount,
             after.threadReleaseCount-before.threadReleaseCount,
             (unsigned)after.changeCpuCount-(unsigned)before.changeCpuCount);
+#endif
 #ifdef GANGSTAR_AUDIO_SCOPED_PRIORITY
     int changed=priority.changed;
     int restored=rio_audio_schedule_end(&priority,&scheduling);
@@ -970,9 +989,9 @@ static __attribute__((noinline)) uintptr_t probe_39(uintptr_t a,uintptr_t b,uint
 }
 #define AUDIO_PROBE(N,PHASE) \
 static __attribute__((noinline)) uintptr_t probe_##N(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) { \
-    uint64_t began=rio_audio_scope_active()?sceKernelGetProcessTimeWide():0; \
+    uint64_t began=rio_audio_scope_active()?rio_diagnostic_clock():0; \
     uintptr_t result=probes[N].original(a,b,c,d); \
-    if(began)rio_audio_phase(PHASE,sceKernelGetProcessTimeWide()-began); \
+    if(began)rio_audio_phase(PHASE,rio_diagnostic_clock()-began); \
     return result; \
 }
 AUDIO_PROBE(40,RIO_AUDIO_LOAD_ASYNC)
@@ -982,7 +1001,11 @@ static uintptr_t chunk_fill,chunk_submit,chunk_cursor_vtable,chunk_ima_vtable;
 static atomic_uint chunk_half_calls,chunk_original_calls;
 #endif
 static __attribute__((noinline)) uintptr_t probe_42(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
-    uint64_t began=rio_audio_scope_active()?sceKernelGetProcessTimeWide():0;
+#ifdef GANGSTAR_RELEASE_BUILD
+    uint64_t began=rio_audio_scope_active()?1:0;
+#else
+    uint64_t began=rio_audio_scope_active()?rio_diagnostic_clock():0;
+#endif
     unsigned original=0,requested=0;
     if(began) {
         uintptr_t driver=*(uintptr_t *)(a+0x110),decoder=*(uintptr_t *)(a+0x114);
@@ -1009,14 +1032,14 @@ static __attribute__((noinline)) uintptr_t probe_42(uintptr_t a,uintptr_t b,uint
     }
     uintptr_t result=probes[42].original(a,b,c,d);
     if(requested!=original)*(unsigned *)(a+0x108)=original;
-    if(began)rio_audio_phase(RIO_AUDIO_PROCESS,sceKernelGetProcessTimeWide()-began);
+    if(began)rio_audio_phase(RIO_AUDIO_PROCESS,rio_diagnostic_clock()-began);
     return result;
 }
 AUDIO_PROBE(43,RIO_AUDIO_MPC_DECODE)
 AUDIO_PROBE(44,RIO_AUDIO_WAV_DECODE)
 AUDIO_PROBE(45,RIO_AUDIO_NATIVE_DECODE)
 AUDIO_PROBE(46,RIO_AUDIO_VORBIS_DECODE)
-#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
 static struct { atomic_uint checked,matched,mismatch,unsupported,native_us,original_us; } adpcm_verify[2];
 #ifdef GANGSTAR_NATIVE_IMA_FAST
 static atomic_uint ima_fast_blocks,ima_fast_fallback,ima_fast_errors,ima_fast_us;
@@ -1044,7 +1067,7 @@ static uintptr_t fast_ima_block(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d)
         .scratch=*(uint8_t **)(a+0x6c)};
     struct NativeImaStream context={stream,*(uintptr_t *)stream};
     RioImaStream callbacks={native_ima_tell,native_ima_read,native_ima_seek,&context};
-    uint64_t began=sceKernelGetProcessTimeWide();
+    uint64_t began=rio_diagnostic_clock();
     int frames=rio_ima_read_block(&block,&callbacks,(int16_t *)b,2048);
     if(frames==-1)goto fallback;
     if(frames==-2) { atomic_store(&ima_fast_disabled,1);atomic_fetch_add(&ima_fast_errors,1);return 0; }
@@ -1055,7 +1078,7 @@ static uintptr_t fast_ima_block(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d)
         memcpy((void *)(a+0x2a),block.state,channels*4);
         *(unsigned *)(a+0x58)=block.position;
         atomic_fetch_add(&ima_fast_blocks,1);
-        atomic_fetch_add(&ima_fast_us,(unsigned)(sceKernelGetProcessTimeWide()-began));
+        atomic_fetch_add(&ima_fast_us,(unsigned)(rio_diagnostic_clock()-began));
     }
     return (uintptr_t)frames;
 fallback:
@@ -1064,11 +1087,14 @@ fallback:
 }
 #endif
 static uintptr_t verify_adpcm_block(unsigned kind,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+#ifndef GANGSTAR_NATIVE_ADPCM_VERIFY
+    return probes[47+kind].original(a,b,c,d);
+#else
     unsigned position=kind?0x30:0x58;
     unsigned before=*(unsigned *)(a+position);
-    uint64_t began=sceKernelGetProcessTimeWide();
+    uint64_t began=rio_diagnostic_clock();
     uintptr_t result=probes[47+kind].original(a,b,c,d);
-    unsigned original_us=(unsigned)(sceKernelGetProcessTimeWide()-began);
+    unsigned original_us=(unsigned)(rio_diagnostic_clock()-began);
     if((int)result<=0)return result;
     unsigned bytes=*(unsigned *)(a+position)-before,channels=*(unsigned *)(a+0x10);
     if(bytes>1024 || channels<1 || channels>2 || result>2048/channels ||
@@ -1078,16 +1104,17 @@ static uintptr_t verify_adpcm_block(unsigned kind,uintptr_t a,uintptr_t b,uintpt
     const uint8_t *input=*(const uint8_t **)(a+(kind?0x44:0x6c));
     int16_t pcm[2048];int16_t coefficients[14];
     if(kind)memcpy(coefficients,(void *)(a+0x50),sizeof(coefficients));
-    began=sceKernelGetProcessTimeWide();
+    began=rio_diagnostic_clock();
     size_t frames=kind?rio_adpcm_ms(input,bytes,channels,coefficients,pcm,2048):
         rio_adpcm_ima(input,bytes,channels,pcm,2048);
-    atomic_fetch_add(&adpcm_verify[kind].native_us,(unsigned)(sceKernelGetProcessTimeWide()-began));
+    atomic_fetch_add(&adpcm_verify[kind].native_us,(unsigned)(rio_diagnostic_clock()-began));
     atomic_fetch_add(&adpcm_verify[kind].original_us,original_us);
     if(!frames) { atomic_fetch_add(&adpcm_verify[kind].unsupported,1);return result; }
     atomic_fetch_add(&adpcm_verify[kind].checked,1);
     int match=frames>=result && !memcmp(pcm,(void *)b,result*channels*sizeof(int16_t));
     atomic_fetch_add(match?&adpcm_verify[kind].matched:&adpcm_verify[kind].mismatch,1);
     return result; /* Playback always uses the original PCM and original state. */
+#endif
 }
 static uintptr_t probe_47(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
 #ifdef GANGSTAR_NATIVE_IMA_FAST
@@ -1108,7 +1135,7 @@ static void audio_probe_report(void) {
         atomic_exchange(&ima_fast_blocks,0),atomic_exchange(&ima_fast_fallback,0),
         atomic_exchange(&ima_fast_errors,0),atomic_exchange(&ima_fast_us,0),atomic_load(&ima_fast_disabled));
 #endif
-#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
     for(unsigned i=0;i<2;++i)
         l_info("RIO_ADPCM_VERIFY codec=%s checked=%u matched=%u mismatch=%u unsupported=%u native_math_us=%u original_block_us=%u",
             i?"ms":"ima",atomic_exchange(&adpcm_verify[i].checked,0),atomic_exchange(&adpcm_verify[i].matched,0),
@@ -1147,7 +1174,7 @@ static void audio_probe_report(void) {
     }
     if(dropped)l_info("RIO_EMITTER_UPDATE dropped=%u",dropped);
 }
-#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
 #define PHASE_BASE 50
 #else
 #define PHASE_BASE 47
@@ -1172,6 +1199,20 @@ static uintptr_t sequential_id_call(NativeCall original,uintptr_t a,uintptr_t b,
  return result;
 }
 static int native_probe_needed(unsigned i) {
+#ifdef GANGSTAR_RELEASE_BUILD
+ if(i<PHASE_BASE) {
+  // Archive/cache/preload, audio priority/chunking, and optimized IMA only.
+  return i==14 || i==15 || i==16 || i==17 || i==20 || i==21 ||
+         (i>=33 && i<=39) || i==42 ||
+#ifdef GANGSTAR_NATIVE_IMA_FAST
+         i==47 ||
+#endif
+         0;
+ }
+ // Keep native ID cache, clone-name reuse, and partial lightmap reads.
+ return i==PHASE_BASE+46 || i==PHASE_BASE+50 || i==PHASE_BASE+54 ||
+        i==PHASE_BASE+55 || i==PHASE_BASE+56;
+#endif
 #ifdef GANGSTAR_DETAILED_RENDER_PROFILE
  (void)i;return 1;
 #else
@@ -1201,12 +1242,16 @@ static uintptr_t phase_call(unsigned phase,uintptr_t a,uintptr_t b,uintptr_t c,u
  struct Probe *p=&probes[PHASE_BASE+phase];
  if(phase==RIO_PHASE_NATIVE_TID)return sequential_id_call(p->original,a,b,c,d);
  if(!gangstar_wait_is_main())return p->original(a,b,c,d);
+#ifdef GANGSTAR_RELEASE_BUILD
+ if(phase>=RIO_PHASE_SUBMIT_BASE)
+  return submit_native_call(phase-RIO_PHASE_SUBMIT_BASE,p->original,a,b,c,d);
+#endif
  if(phase>=RIO_PHASE_SUBMIT_BASE) {
   unsigned k=phase-RIO_PHASE_SUBMIT_BASE;++submit_sample[k].calls;
   if(!rio_render_choose(&submit_sample[k].random))return submit_native_call(k,p->original,a,b,c,d);
-  uint64_t began=sceKernelGetProcessTimeWide();
+  uint64_t began=rio_diagnostic_clock();
   uintptr_t result=submit_native_call(k,p->original,a,b,c,d);
-  submit_sample[k].us+=sceKernelGetProcessTimeWide()-began;++submit_sample[k].samples;
+  submit_sample[k].us+=rio_diagnostic_clock()-began;++submit_sample[k].samples;
   return result;
  }
 
@@ -1215,9 +1260,9 @@ static uintptr_t phase_call(unsigned phase,uintptr_t a,uintptr_t b,uintptr_t c,u
   if(!cull_prepare_depth)return p->original(a,b,c,d);
   ++cull_lookup[kind].calls;
   if(!rio_render_choose(&cull_lookup[kind].random))return p->original(a,b,c,d);
-  uint64_t began=sceKernelGetProcessTimeWide();
+  uint64_t began=rio_diagnostic_clock();
   uintptr_t result=p->original(a,b,c,d);
-  uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+  uint64_t elapsed=rio_diagnostic_clock()-began;
   ++cull_lookup[kind].samples;cull_lookup[kind].us+=elapsed;
   if(elapsed>cull_lookup[kind].worst)cull_lookup[kind].worst=elapsed;
   return result;
@@ -1235,9 +1280,9 @@ static uintptr_t phase_call(unsigned phase,uintptr_t a,uintptr_t b,uintptr_t c,u
  }
  int slot=rio_phase_enter(&phase_stack);
  if(phase==RIO_PHASE_CULL_PREPARE)++cull_prepare_depth;
- uint64_t began=sceKernelGetProcessTimeWide();
+ uint64_t began=rio_diagnostic_clock();
  uintptr_t result=p->original(a,b,c,d);
- uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+ uint64_t elapsed=rio_diagnostic_clock()-began;
  if(phase==RIO_PHASE_CULL_PREPARE)--cull_prepare_depth;
  rio_phase_leave(&phase_stack,&phase_window[phase],slot,elapsed);
  if(phase==RIO_PHASE_REGISTER_TREE)rio_registration_record(&registration_profile,a,register_root,register_camera,register_culler,elapsed);
@@ -1331,7 +1376,7 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
 }
 static NativeCall wrappers[] = {probe_0, probe_1, probe_2, probe_3, probe_4, probe_5, probe_6, probe_7,
     probe_8, probe_9, probe_10, probe_11, probe_12, probe_13, probe_14, probe_15, probe_16, probe_17, probe_18, probe_19, probe_20, probe_21, probe_22, probe_23, probe_24, probe_25, probe_26, probe_27, probe_28, probe_29, probe_30, probe_31, probe_32, probe_33, probe_34, probe_35, probe_36, (NativeCall)probe_37, (NativeCall)probe_38,probe_39,probe_40,probe_41,probe_42,probe_43,probe_44,probe_45,probe_46
-#ifdef GANGSTAR_NATIVE_ADPCM_VERIFY
+#if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
     ,probe_47,probe_48,probe_49
 #endif
     ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54,stream_partial_map,(NativeCall)stream_partial_mips
@@ -1375,7 +1420,7 @@ void gangstar_native_phase_window_report(void) {
  registration_profile=(RioRegistrationProfile){0};
  static uint64_t previous_wall,previous_cpu;
  SceKernelThreadInfo thread={.size=sizeof(thread)};
- uint64_t wall=sceKernelGetProcessTimeWide();
+ uint64_t wall=rio_diagnostic_clock();
  if(!sceKernelGetThreadInfo(sceKernelGetThreadId(),&thread)) {
   if(previous_wall)l_info("RIO_PHASE_CPU wall_us=%llu run_clocks=%llu",
    (unsigned long long)(wall-previous_wall),(unsigned long long)(thread.runClocks-previous_cpu));
@@ -1489,6 +1534,9 @@ GangstarNativePerf gangstar_native_stats(void) {
 void gangstar_native_startup_frame(void) {
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     sequential_id_frame_begin();
+#ifdef GANGSTAR_RELEASE_BUILD
+    return;
+#endif
     asset_count = asset_dropped = 0;
     for (unsigned i = 0; i < sizeof(probes) / sizeof(*probes); ++i) {
         probes[i].us = 0; probes[i].calls = 0;

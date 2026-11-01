@@ -17,7 +17,12 @@ int rio_audio_scope_matches(uintptr_t object) {
 }
 void rio_audio_scope_begin(RioAudioProbeScope *scope,uintptr_t object,int thread,uint64_t started) {
     int saved=errno;
-    *scope=(RioAudioProbeScope){0};pthread_once(&once,create_key);
+#ifdef GANGSTAR_RELEASE_BUILD
+    scope->active=0;scope->previous=NULL;
+#else
+    *scope=(RioAudioProbeScope){0};
+#endif
+    pthread_once(&once,create_key);
     if(atomic_load(&ready)) {
         scope->previous=pthread_getspecific(key);
         scope->event.object=object;scope->event.thread=thread;scope->event.started=started;
@@ -26,6 +31,9 @@ void rio_audio_scope_begin(RioAudioProbeScope *scope,uintptr_t object,int thread
     errno=saved;
 }
 void rio_audio_phase(unsigned kind,uint64_t elapsed) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    (void)kind;(void)elapsed;return;
+#endif
     if(kind>=RIO_AUDIO_PHASES || !atomic_load(&ready))return;
     RioAudioProbeScope *scope=pthread_getspecific(key);
     if(scope) { scope->event.us[kind]+=elapsed;++scope->event.calls[kind]; }
@@ -55,6 +63,9 @@ void rio_audio_scope_end(RioAudioProbeScope *scope,uint64_t ended) {
     if(!scope->active)return;
     int saved=errno;
     pthread_setspecific(key,scope->previous);
+#ifdef GANGSTAR_RELEASE_BUILD
+    (void)ended;errno=saved;return;
+#endif
     scope->event.elapsed=ended-scope->event.started;
     if(scope->event.elapsed>=5000) {
         pthread_mutex_lock(&lock);

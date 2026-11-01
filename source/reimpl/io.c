@@ -1,3 +1,4 @@
+#include "gangstar_diagnostics.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2022      Rinnegatamante
@@ -77,7 +78,10 @@ void gangstar_io_frame_begin(void) {
 }
 GangstarFrameIo gangstar_io_frame_end(void) { return rio_frame_io; }
 static unsigned rio_read_sample(uint64_t started, size_t bytes, uintptr_t caller) {
-    unsigned elapsed = (unsigned)(sceKernelGetProcessTimeWide() - started);
+#ifdef GANGSTAR_RELEASE_BUILD
+    (void)started;(void)bytes;(void)caller;return 0;
+#endif
+    unsigned elapsed = (unsigned)(rio_diagnostic_clock() - started);
     if(rio_audio_scope_active())rio_audio_phase(RIO_AUDIO_READ,elapsed);
     if (atomic_load_explicit(&rio_frame_thread, memory_order_relaxed) == sceKernelGetThreadId()) {
         rio_frame_io.read_us += elapsed;
@@ -215,9 +219,9 @@ size_t fread_soloader(void *ptr, size_t size, size_t nmemb, FILE *stream) {
 #ifdef USE_SCELIBC_IO
 #ifdef GANGSTAR_IO_PROFILE
     if (size && nmemb <= SIZE_MAX / size && size * nmemb >= 4096) {
-        uint64_t start = sceKernelGetProcessTimeWide();
+        uint64_t start = rio_diagnostic_clock();
         size_t result = sceLibcBridge_fread(ptr, size, nmemb, stream);
-        uint64_t elapsed = sceKernelGetProcessTimeWide() - start;
+        uint64_t elapsed = rio_diagnostic_clock() - start;
         if (elapsed >= 2000)
             l_info("IO_SLOW op=fread stream=%p requested=%u returned=%u elapsed_us=%u",
                    stream, (unsigned)(size * nmemb), (unsigned)(result * size), (unsigned)elapsed);
@@ -228,16 +232,16 @@ size_t fread_soloader(void *ptr, size_t size, size_t nmemb, FILE *stream) {
 #else
 #ifdef GANGSTAR_IO_PROFILE
     if (size && nmemb <= SIZE_MAX / size && size * nmemb >= 4096) {
-        uint64_t start = sceKernelGetProcessTimeWide();
+        uint64_t start = rio_diagnostic_clock();
         size_t result = fread(ptr, size, nmemb, stream);
-        uint64_t elapsed = sceKernelGetProcessTimeWide() - start;
+        uint64_t elapsed = rio_diagnostic_clock() - start;
         if (elapsed >= 2000)
             l_info("IO_SLOW op=fread stream=%p requested=%u returned=%u elapsed_us=%u",
                    stream, (unsigned)(size * nmemb), (unsigned)(result * size), (unsigned)elapsed);
         return result;
     }
 #endif
-    uint64_t started = sceKernelGetProcessTimeWide();
+    uint64_t started = rio_diagnostic_clock();
     size_t result = fread(ptr, size, nmemb, stream);
     size_t returned=size && result<=SIZE_MAX/size?result*size:0;
     unsigned elapsed=rio_read_sample(started,returned,(uintptr_t)__builtin_return_address(0));
@@ -253,9 +257,9 @@ ssize_t read_soloader(int fd, void *buf, size_t count) {
         off_t offset = lseek(fd, 0, SEEK_CUR);
         void *caller = __builtin_return_address(0);
         SceUID thread_id = sceKernelGetThreadId();
-        uint64_t start = sceKernelGetProcessTimeWide();
+        uint64_t start = rio_diagnostic_clock();
         ssize_t result = gangstar_archive_read(fd, buf, count);
-        uint64_t elapsed = sceKernelGetProcessTimeWide() - start;
+        uint64_t elapsed = rio_diagnostic_clock() - start;
         if (elapsed >= 2000)
             l_info("IO_SLOW op=read fd=%d offset=%lld requested=%u returned=%d elapsed_us=%u tid=%d caller=%p",
                    fd, (long long)offset, (unsigned)count, (int)result,
@@ -263,7 +267,7 @@ ssize_t read_soloader(int fd, void *buf, size_t count) {
         return result;
     }
 #endif
-    uint64_t started = sceKernelGetProcessTimeWide();
+    uint64_t started = rio_diagnostic_clock();
     ssize_t result = gangstar_archive_read(fd, buf, count);
     unsigned elapsed=rio_read_sample(started,result>0?(size_t)result:0,(uintptr_t)__builtin_return_address(0));
     rio_read_name(elapsed,started,2,(uintptr_t)fd,count,result>0?(size_t)result:0,
@@ -272,7 +276,7 @@ ssize_t read_soloader(int fd, void *buf, size_t count) {
 }
 
 ssize_t pread_soloader(int fd, void *buf, size_t count, off_t offset) {
-    uint64_t started = sceKernelGetProcessTimeWide();
+    uint64_t started = rio_diagnostic_clock();
     ssize_t result = gangstar_archive_pread(fd, buf, count, offset);
     unsigned elapsed=rio_read_sample(started,result>0?(size_t)result:0,(uintptr_t)__builtin_return_address(0));
     rio_read_name(elapsed,started,2,(uintptr_t)fd,count,result>0?(size_t)result:0,

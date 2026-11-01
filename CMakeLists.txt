@@ -54,8 +54,13 @@ if (DUMP_COMPILED_SHADERS)
   endif()
 endif()
 
+option(GANGSTAR_RUNTIME_DIAGNOSTICS "Enable gameplay timing, sampled profiling and verbose logs" OFF)
+if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
+  add_definitions(-DGANGSTAR_RELEASE_BUILD)
+endif()
+
 # Unique debug definition for loader's logging to not interfere with anything
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+if (GANGSTAR_RUNTIME_DIAGNOSTICS)
   add_definitions(-DDEBUG_SOLOADER)
   # Uncomment this for verbose FalsoJNI logging:
   #add_definitions(-DFALSOJNI_DEBUGLEVEL=0)
@@ -117,9 +122,6 @@ if (GANGSTAR_NATIVE_IMA_FAST)
   add_definitions(-DGANGSTAR_NATIVE_IMA_FAST)
 endif()
 option(GANGSTAR_NATIVE_ADPCM_VERIFY "Compare optimized native ADPCM blocks against original PCM without changing playback" OFF)
-if (GANGSTAR_NATIVE_IMA_FAST AND NOT GANGSTAR_NATIVE_ADPCM_VERIFY)
-  message(FATAL_ERROR "GANGSTAR_NATIVE_IMA_FAST requires GANGSTAR_NATIVE_ADPCM_VERIFY hooks")
-endif()
 if (GANGSTAR_NATIVE_ADPCM_VERIFY)
   add_definitions(-DGANGSTAR_NATIVE_ADPCM_VERIFY)
 endif()
@@ -305,8 +307,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -mfloat-abi=softfp -std=gnu11 -Wno-de
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,-q -mfloat-abi=softfp -std=gnu++20 -Wno-write-strings -Wno-psabi")
 
 if (GANGSTAR_PERFORMANCE_PROFILE)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O${GANGSTAR_HOST_OPT_LEVEL} -g3")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O${GANGSTAR_HOST_OPT_LEVEL} -g3")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O${GANGSTAR_HOST_OPT_LEVEL}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O${GANGSTAR_HOST_OPT_LEVEL}")
     # The Vita Debug configuration appends -O0 after these global flags.
     # Keep its DEBUG definitions/assertions, but put the selected level last.
     string(APPEND CMAKE_C_FLAGS_DEBUG " -O${GANGSTAR_HOST_OPT_LEVEL}")

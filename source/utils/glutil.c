@@ -1,3 +1,4 @@
+#include "gangstar_diagnostics.h"
 #include "gangstar_render_sample.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
@@ -367,9 +368,9 @@ void load_shader(GLuint shader, const char * string, size_t length) {
 
 void glLinkProgram_soloader(GLuint program) {
     void *recipe = gangstar_shader_capture(program);
-    uint64_t started = sceKernelGetProcessTimeWide();
+    uint64_t started = rio_diagnostic_clock();
     glLinkProgram(program);
-    uint64_t elapsed = sceKernelGetProcessTimeWide() - started;
+    uint64_t elapsed = rio_diagnostic_clock() - started;
     gangstar_asset_sample(RIO_ASSET_SHADER, elapsed, 0);
     if (elapsed >= 20000)
         l_info("Gangstar shader link stall: program=%u elapsed_us=%u", program, (unsigned)elapsed);

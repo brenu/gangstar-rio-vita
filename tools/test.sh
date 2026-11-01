@@ -184,3 +184,7 @@ python3 tools/test_gangstar_mission_intro.py
 python3 tools/test_gangstar_fps_camera.py
 
 python3 tools/test_gangstar_iap_offline.py
+
+python3 tools/test_gangstar_release.py
+
+python3 tools/test_gangstar_release_routes.py

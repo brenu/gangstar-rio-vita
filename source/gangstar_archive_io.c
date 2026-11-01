@@ -25,6 +25,9 @@ static unsigned trace_frame;
 static GangstarArchiveFrame frame_stats;
 GangstarArchiveFrame gangstar_archive_frame_stats(void) { return frame_stats; }
 static uint64_t trace_clock(void) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    return 0;
+#endif
 #ifdef __vita__
     return sceKernelGetProcessTimeWide();
 #else
@@ -32,6 +35,9 @@ static uint64_t trace_clock(void) {
 #endif
 }
 static int trace_main(void) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    return 0;
+#endif
 #ifdef __vita__
     return atomic_load_explicit(&trace_thread, memory_order_relaxed) == sceKernelGetThreadId();
 #else
@@ -48,6 +54,9 @@ void gangstar_archive_frame(unsigned frame) {
     frame_stats = (GangstarArchiveFrame){0};
 }
 static int trace_audio(void) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    return 0;
+#endif
 #ifdef __vita__
     return rio_audio_scope_active();
 #else

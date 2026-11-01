@@ -14,6 +14,9 @@ void gangstar_wait_frame(void) {
     stats = (GangstarWaitPerf){0}; event_count = 0;
 }
 uint64_t gangstar_wait_begin(void) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    return 0;
+#endif
     return atomic_load_explicit(&frame_thread, memory_order_relaxed) == sceKernelGetThreadId()
         ? sceKernelGetProcessTimeWide() : 0;
 }

@@ -17,6 +17,9 @@ static unsigned upload_failure_count, upload_failure_dropped;
 static unsigned alpha_discard_calls;
 static uint64_t alpha_discard_bytes;
 void gangstar_alpha_discard(size_t bytes) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    (void)bytes;return;
+#endif
     if (atomic_load_explicit(&frame_thread,memory_order_relaxed)!=sceKernelGetThreadId()) return;
     ++alpha_discard_calls; alpha_discard_bytes+=bytes;
 }
@@ -41,10 +44,16 @@ void gangstar_asset_frame(void) {
 }
 GangstarAssetPerf gangstar_asset_stats(void) { return stats; }
 static uint64_t start(void) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    return 0;
+#endif
     return atomic_load_explicit(&frame_thread, memory_order_relaxed) == sceKernelGetThreadId()
         ? sceKernelGetProcessTimeWide() : 0;
 }
 void gangstar_asset_sample(unsigned kind, uint64_t us, uint64_t bytes) {
+#ifdef GANGSTAR_RELEASE_BUILD
+    (void)kind;(void)us;(void)bytes;return;
+#endif
     if (kind >= RIO_ASSET_KINDS ||
         atomic_load_explicit(&frame_thread, memory_order_relaxed) != sceKernelGetThreadId()) return;
     ++stats.calls[kind]; stats.us[kind] += us; stats.bytes[kind] += bytes;
