@@ -21,7 +21,7 @@ You need your own copy of the supported Android game. The repository and VPK do 
 | Square (hold) | Punch or fire | Fire |
 | R | — | Accelerate |
 | Circle / L | Take cover (release) | Circle: toggle radio; L: brake |
-| Triangle | Get up when fallen (tap repeatedly); otherwise nearby shop/item interaction or enter vehicle | Exit vehicle (release) |
+| Triangle | Get up when fallen (tap repeatedly); otherwise nearby shop interaction, swap a nearby ground weapon, item interaction, or enter vehicle | Exit vehicle (release) |
 | D-pad left / right | Previous / next weapon | Previous / next weapon |
 | D-pad up | Reload | Toggle radio |
 | D-pad down | Use selected consumable | Vehicle side mission (when available) |

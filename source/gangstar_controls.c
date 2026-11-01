@@ -28,6 +28,7 @@ static void *(*script_instance)(void);
 static int (*in_cinematic)(void *), (*controls_locked)(void *);
 static int (*near_shop)(void *), (*near_item)(void *), (*getup_active)(void *);
 static unsigned triangle_action=2;
+static uint32_t triangle_weapon;
 static void (*raise_event)(void *, const void *);
 static void (*move_camera)(void *, int, int);
 static void **application, **player_instance;
@@ -112,6 +113,13 @@ static void send_pedal(int accelerator, int down) {
 }
 void gangstar_controls_buttons(uint32_t state) { buttons = state; }
 
+// WeaponManager::nearWeapon retains this Item pointer only for manual swaps;
+// notNearWeapon clears it. Ordinary pickups stay on the native automatic path.
+static uint32_t current_swap_item(void) {
+    uint32_t item=0;
+    if(*player_instance)memcpy(&item,(char *)*player_instance+0xb94,sizeof(item));
+    return item;
+}
 static void send_button(void *unused, unsigned button, unsigned state) {
     (void)unused;
     if (button==2) {
@@ -124,9 +132,10 @@ static void send_button(void *unused, unsigned button, unsigned state) {
             unsigned vehicle=0;int blocked=0;
             if(player) {blocked=player[0x77d]!=0;memcpy(&vehicle,player+0x778,sizeof(vehicle));}
             int recovery=rio_recovery_available(hud_getup,fallen,blocked,vehicle!=0);
-            triangle_action=rio_triangle_action(last_mode,recovery,hud && near_shop(hud),hud && near_item(hud));
+            triangle_weapon=current_swap_item();
+            triangle_action=rio_triangle_action(last_mode,recovery,hud && near_shop(hud),triangle_weapon!=0,hud && near_item(hud));
             l_info("Gangstar recovery context: hud=%d fallen=%d blocked=%d vehicle=%d",hud_getup,fallen,blocked,vehicle!=0);
-            l_info("Gangstar context action: %s",triangle_action==21?"get up":triangle_action==4?"shop":triangle_action==3?"item":"vehicle");
+            l_info("Gangstar context action: %s",triangle_action==21?"get up":triangle_action==4?"shop":triangle_action==25?"swap weapon":triangle_action==3?"item":"vehicle");
         }
         // Cancellation must reach the action latched before a HUD-mode change.
         button=state==3?triangle_action:last_mode>=2?2:triangle_action;
@@ -134,6 +143,12 @@ static void send_button(void *unused, unsigned button, unsigned state) {
     struct { uint32_t vtable,type,state,button,context,callback; } event={
         virtual_vtable,13,state,button,0,0};
     _Static_assert(sizeof(event)==24,"Android virtual button layout");
+    if(button==25) {
+        // Native handler consumes release only and dereferences event+0x14.
+        // Match the native touch event payload, with a still-current Item.
+        if(!triangle_weapon || current_swap_item()!=triangle_weapon)return;
+        event.context=UINT32_MAX;event.callback=triangle_weapon;
+    }
     unsigned before=0,after=0;
     unsigned char *player=button==21 && state==2 ? *player_instance : NULL;
     if(player)memcpy(&before,player+0x908,sizeof(before));

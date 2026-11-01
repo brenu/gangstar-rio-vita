@@ -3,6 +3,7 @@
 #include "utils/logger.h"
 #include "utils/dialog.h"
 #include "gangstar_trophies.h"
+#include "gangstar_iap_offline.h"
 #include "gangstar_jni_classes.h"
 #include "gangstar_jni_strings.h"
 #include <string.h>
@@ -37,6 +38,7 @@ static const char *installation_id(void) {
 }
 static int accelerometer_enabled;
 void gangstar_java_poll(void) {
+    gangstar_iap_offline_poll();
     if (!accelerometer_enabled) return;
     SceMotionState state;
     if (sceMotionGetState(&state) < 0) return;

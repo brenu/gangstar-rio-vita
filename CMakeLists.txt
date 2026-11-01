@@ -329,6 +329,7 @@ set(SOURCES
     source/gangstar_jni_tables.c
     source/gangstar_perf.c
     source/gangstar_java.c
+    source/gangstar_iap_offline.c
     source/gangstar_jni_strings.c
     source/gangstar_trophies.c
     source/gangstar_controls.c

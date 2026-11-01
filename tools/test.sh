@@ -178,3 +178,9 @@ python3 tools/test_gangstar_partial_lightmap.py
 python3 tools/test_gangstar_touch_update.py
 
 python3 tools/test_gangstar_recovery.py
+
+python3 tools/test_gangstar_mission_intro.py
+
+python3 tools/test_gangstar_fps_camera.py
+
+python3 tools/test_gangstar_iap_offline.py

@@ -9,7 +9,7 @@ enum { RIO_CROSS=1u, RIO_SQUARE=2u, RIO_CIRCLE=4u, RIO_TRIANGLE=8u,
 static inline int rio_touch_button_mapped(unsigned type) {
  switch(type) {
  case 0: case 2: case 9: case 10: case 11: case 13: case 16:
- case 19: case 20: case 21: case 23: case 26: return 1;
+ case 19: case 20: case 21: case 23: case 25: case 26: return 1;
  default: return 0;
  }
 }
@@ -17,8 +17,8 @@ static inline int rio_touch_button_mapped(unsigned type) {
 static inline int rio_recovery_available(int hud_active,int fallen,int blocked,int in_vehicle) {
  return hud_active || (fallen && !blocked && !in_vehicle);
 }
-static inline unsigned rio_triangle_action(int mode,int getup,int shop,int item) {
- return mode==1 && getup?21:mode==1 && shop?4:mode==1 && item?3:2;
+static inline unsigned rio_triangle_action(int mode,int getup,int shop,int weapon,int item) {
+ return mode==1 && getup?21:mode==1 && shop?4:mode==1 && weapon?25:mode==1 && item?3:2;
 }
 typedef struct { unsigned held, blocked; int mode; unsigned pending_cancel; } RioPadActions;
 // Consume a release only if this bridge consumed its matching press.

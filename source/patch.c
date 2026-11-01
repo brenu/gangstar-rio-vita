@@ -35,6 +35,7 @@ extern "C"
 #include <stdint.h>
 #include <stdatomic.h>
 #include "gangstar_controls.h"
+#include "gangstar_iap_offline.h"
 
 void __kuser_memory_barrier(void) {
 	__sync_synchronize();
@@ -247,12 +248,139 @@ static void gangstar_hide_touch_buttons(void) {
 #endif
 
 void gangstar_native_startup_install(void);
+// Mission-intro callbacks may outlive the shared MenuMgr layout during a
+// state transition. Never dispatch through a layout that has been released.
+static void *(*mission_intro_menu)(void);
+static unsigned char *mission_intro_active;
+static void (*mission_intro_original[2])(void *,void *);
+static unsigned mission_intro_missing[2];
+static void *(*mission_intro_allocate)(unsigned,const char *,int,int);
+static void (*mission_intro_construct)(void *),(*mission_intro_destroy)(void *);
+static void *(*mission_intro_hud)(void);
+static void (*mission_intro_hide)(void *),(*mission_intro_deactivate)(void *);
+static int mission_intro_repairing;
+static int mission_intro_is_top(void *state,void *machine) {
+    if(!machine)return 0;
+    uintptr_t *begin=(void *)((uintptr_t *)machine)[4];
+    uintptr_t *end=(void *)((uintptr_t *)machine)[5];
+    if(!begin || (uintptr_t)end<=(uintptr_t)begin ||
+       (uintptr_t)end-(uintptr_t)begin>64*sizeof(uintptr_t))return 0;
+    return end[-1]==(uintptr_t)state;
+}
+static int mission_intro_restore(void *menu,void *state,void *machine) {
+    // C++ construction happens before the state handoff destroys old states.
+    // Re-create a lost shared layout only for the live, topmost intro state.
+    if(!menu || mission_intro_repairing || !mission_intro_is_top(state,machine))return 0;
+    mission_intro_repairing=1;
+    void *layout=mission_intro_allocate(12,"Vita mission intro",0,1);
+    if(!layout){mission_intro_repairing=0;return 0;}
+    mission_intro_construct(layout);
+    uintptr_t existing=0;memcpy(&existing,(char *)menu+0x24,sizeof(existing));
+    if(!mission_intro_is_top(state,machine) || existing) {
+        mission_intro_destroy(layout);mission_intro_repairing=0;
+        return existing && mission_intro_is_top(state,machine);
+    }
+    uintptr_t value=(uintptr_t)layout;memcpy((char *)menu+0x24,&value,sizeof(value));
+    void *hud=mission_intro_hud();
+    if(hud){mission_intro_hide(hud);mission_intro_deactivate(hud);}
+    *mission_intro_active=1;
+    mission_intro_repairing=0;
+    l_info("RIO_MISSION_INTRO restored_layout state=%p layout=%p",state,layout);
+    return 1;
+}
+static void mission_intro_dispatch(unsigned kind,void *state,void *machine) {
+    void *menu=mission_intro_menu();uintptr_t layout=0;
+    if(menu)memcpy(&layout,(char *)menu+0x24,sizeof(layout));
+    if(!layout && !mission_intro_restore(menu,state,machine)) {
+        if(mission_intro_missing[kind]++<4)
+            l_warn("RIO_MISSION_INTRO missing_layout callback=%s active=%u state=%p machine=%p",
+                kind?"draw2d":"update",(unsigned)*mission_intro_active,state,machine);
+        return;
+    }
+    mission_intro_original[kind](state,machine);
+}
+static void mission_intro_update(void *state,void *machine) {mission_intro_dispatch(0,state,machine);}
+static void mission_intro_draw2d(void *state,void *machine) {mission_intro_dispatch(1,state,machine);}
+static void gangstar_mission_intro_guard(void) {
+    uintptr_t table=so_symbol(&so_mod,"_ZTV14GSMissionIntro");
+    uintptr_t update=so_symbol(&so_mod,"_ZN14GSMissionIntro6updateEP12StateMachine");
+    uintptr_t draw=so_symbol(&so_mod,"_ZN14GSMissionIntro6draw2dEPK12StateMachine");
+    mission_intro_menu=(void *)so_symbol(&so_mod,"_ZN7MenuMgr11getInstanceEv");
+    mission_intro_active=(void *)so_symbol(&so_mod,"_ZN12StateMachine16s_isMissionIntroE");
+    mission_intro_allocate=(void *)so_symbol(&so_mod,"_Z11CustomAllocjPKcii");
+    mission_intro_construct=(void *)so_symbol(&so_mod,"_ZN18MissionIntroLayoutC1Ev");
+    mission_intro_destroy=(void *)so_symbol(&so_mod,"_ZN18MissionIntroLayoutD0Ev");
+    mission_intro_hud=(void *)so_symbol(&so_mod,"_ZN11CHudManager11getInstanceEv");
+    mission_intro_hide=(void *)so_symbol(&so_mod,"_ZN11CHudManager4hideEv");
+    mission_intro_deactivate=(void *)so_symbol(&so_mod,"_ZN11CHudManager16deactivateScreenEv");
+    if(!table || !update || !draw || !mission_intro_menu || !mission_intro_active ||
+       !mission_intro_allocate || !mission_intro_construct || !mission_intro_destroy ||
+       !mission_intro_hud || !mission_intro_hide || !mission_intro_deactivate ||
+       *(uint32_t *)(table+36)!=update || *(uint32_t *)(table+44)!=draw) {
+        l_warn("Mission intro guard skipped: unsupported vtable layout");return;
+    }
+    mission_intro_original[0]=(void *)update;mission_intro_original[1]=(void *)draw;
+    uint32_t replacement=(uintptr_t)mission_intro_update;
+    kuKernelCpuUnrestrictedMemcpy((void *)(table+36),&replacement,sizeof(replacement));
+    replacement=(uintptr_t)mission_intro_draw2d;
+    kuKernelCpuUnrestrictedMemcpy((void *)(table+44),&replacement,sizeof(replacement));
+    kuKernelFlushCaches((void *)(table+36),12);
+    l_info("Gangstar mission intro: missing-layout update/draw protection installed");
+}
+
+// FPS init already falls back to the target position when both model nodes
+// are absent. Its enter/update paths omit that check. At these two verified
+// calls the target position is the next vector on the native stack.
+static float *(*fps_scene_position)(float *,const void *);
+static unsigned fps_missing_node;
+static float *fps_optional_position(float *out,const void *node) {
+    if(node)return fps_scene_position(out,node);
+    memcpy(out,out+3,3*sizeof(float));
+    if(fps_missing_node++<8)
+        l_warn("RIO_FPS_CAMERA missing_scene_node fallback=target_position count=%u",fps_missing_node);
+    return out;
+}
+static void gangstar_fps_camera_guard(void) {
+    uintptr_t enter=so_symbol(&so_mod,"_ZN9FPSCamera5enterEv");
+    uintptr_t update=so_symbol(&so_mod,"_ZN9FPSCamera6updateEf");
+    uintptr_t getter=so_symbol(&so_mod,"_ZNK6glitch5scene10ISceneNode19getAbsolutePositionEv");
+    uintptr_t sites[2]={enter+0x60,update+0x11c};
+    const uint32_t expected[2][2]={{0xe28d0068,0xeb064636},{0xe28d0070,0xeb064511}};
+    uintptr_t veneer=(so_mod.patch_head+3)&~(uintptr_t)3;
+    if(!enter || !update || !getter || veneer<so_mod.patch_base ||
+       veneer>so_mod.patch_base+so_mod.patch_size ||
+       8>so_mod.patch_base+so_mod.patch_size-veneer)return;
+    uint32_t branches[2];
+    for(unsigned i=0;i<2;++i) {
+        if(memcmp((void *)(sites[i]-4),expected[i],sizeof(expected[i]))) {
+            l_warn("FPS camera guard skipped: unsupported call site");return;
+        }
+        intptr_t delta=(intptr_t)veneer-(intptr_t)(sites[i]+8);
+        if((delta&3) || delta< -33554432 || delta>33554428) {
+            l_warn("FPS camera guard skipped: branch out of range");return;
+        }
+        branches[i]=0xeb000000u|((uint32_t)(delta/4)&0x00ffffffu);
+    }
+    fps_scene_position=(void *)getter;
+    uint32_t code[2]={0xe51ff004,(uintptr_t)fps_optional_position};
+    kuKernelCpuUnrestrictedMemcpy((void *)veneer,code,sizeof(code));
+    kuKernelFlushCaches((void *)veneer,sizeof(code));so_mod.patch_head=veneer+sizeof(code);
+    for(unsigned i=0;i<2;++i) {
+        kuKernelCpuUnrestrictedMemcpy((void *)sites[i],&branches[i],sizeof(uint32_t));
+        kuKernelFlushCaches((void *)sites[i],sizeof(uint32_t));
+    }
+    l_info("Gangstar FPS camera: optional scene-node position fallback installed");
+}
+
 void so_patch(void) {
 	so_patch_module(&so_mod);
 	uintptr_t console = so_symbol(&so_mod, "_ZN3glf7Console8PrintRawEPKc");
 	if (console) hook_addr(console, (uintptr_t)gangstar_console_raw);
 	gangstar_patch_hud_profile();
 	gangstar_controls_init();
+    gangstar_mission_intro_guard();
+    gangstar_fps_camera_guard();
+    gangstar_iap_offline_install();
 #ifdef GANGSTAR_HIDE_TOUCH_BUTTONS
 	gangstar_hide_touch_buttons();
 #endif

@@ -28,7 +28,7 @@ static inline void gangstar_aircraft_axes(float angle,float strength,float *x,fl
 // fractional part so slow stick movement survives its integer scroll API.
 static inline int gangstar_camera_delta(float axis, float seconds, float *remainder) {
     if (axis == 0) { *remainder = 0; return 0; }
-    float value = *remainder + axis * 1200.0f * fminf(seconds, 0.05f);
+    float value = *remainder + axis * 600.0f * fminf(seconds, 0.05f);
     int delta = (int)value;
     *remainder = value - delta;
     return delta;
