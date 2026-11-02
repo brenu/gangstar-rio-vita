@@ -1,4 +1,5 @@
 #include "gangstar_diagnostics.h"
+#include "gangstar_storage_trace.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2022      Rinnegatamante
@@ -112,6 +113,9 @@ static void rio_read_name(unsigned elapsed,uint64_t started,unsigned kind,uintpt
     errno=saved;
 }
 void gangstar_io_report(void) {
+#ifdef GANGSTAR_STORAGE_TRACE
+    rio_storage_report();
+#endif
     RioLooseIndexStats loose=rio_loose_index_stats();
     l_info("RIO_LOOSE_INDEX absent=%u skipped=%u invalidations=%u",loose.absent,loose.hits,loose.invalidations);
     l_info("RIO_IO calls=%u bytes=%u read_us=%u worst_read_us=%u skipped_document_probes=%u skipped_obb_children=%u skipped_embedded_obb=%u",
@@ -119,11 +123,13 @@ void gangstar_io_report(void) {
         atomic_exchange(&rio_read_us, 0), atomic_exchange(&rio_read_worst, 0),
         atomic_exchange(&rio_rejected_probes, 0),atomic_exchange(&rio_rejected_obb_children,0),atomic_exchange(&rio_rejected_embedded_obb,0));
 #ifdef GANGSTAR_LOOSE_IO_BUFFERING
-    l_info("RIO_FILE_BUFFER reads=%u writes=%u failures=%u read_buffer=16384 obb_read_buffer=131072 write_buffer=65536",
-        atomic_exchange(&rio_buffered_reads,0),atomic_exchange(&rio_buffered_writes,0),atomic_exchange(&rio_buffer_failures,0));
+    l_info("RIO_FILE_BUFFER reads=%u writes=%u failures=%u read_buffer=16384 obb_read_buffer=%u write_buffer=65536",
+        atomic_exchange(&rio_buffered_reads,0),atomic_exchange(&rio_buffered_writes,0),atomic_exchange(&rio_buffer_failures,0),
+        (unsigned)RIO_CACHE_BLOCK_SIZE);
 #endif
-    l_info("RIO_IO_WORST bytes=%u caller=0x%x tid=0x%x obb_buffer=131072",
-        atomic_load(&rio_worst_bytes), atomic_load(&rio_worst_caller), atomic_load(&rio_worst_tid));
+    l_info("RIO_IO_WORST bytes=%u caller=0x%x tid=0x%x obb_buffer=%u",
+        atomic_load(&rio_worst_bytes), atomic_load(&rio_worst_caller), atomic_load(&rio_worst_tid),
+        (unsigned)RIO_CACHE_BLOCK_SIZE);
 }
 
 FILE * fopen_soloader(const char * filename, const char * mode) {
@@ -175,7 +181,10 @@ FILE * fopen_soloader(const char * filename, const char * mode) {
 #ifdef GANGSTAR_LOOSE_IO_BUFFERING
     if(ret) {
         int writable=mode[0]=='w' || mode[0]=='a' || strchr(mode,'+');
-        size_t buffer=writable?64*1024:archive_root?128*1024:16*1024;
+        // Limit speculative stdio read-ahead to one cache block. A small
+        // resource header must not pull 128 KiB into each short-lived reader.
+        // Large fread requests still reach the cache's batched fill path.
+        size_t buffer=writable?64*1024:archive_root?RIO_CACHE_BLOCK_SIZE:16*1024;
         if(setvbuf(ret,NULL,_IOFBF,buffer))atomic_fetch_add(&rio_buffer_failures,1);
         else if(writable)atomic_fetch_add(&rio_buffered_writes,1);
         else atomic_fetch_add(&rio_buffered_reads,1);
@@ -184,10 +193,9 @@ FILE * fopen_soloader(const char * filename, const char * mode) {
     if (ret && mode[0] == 'r' && !strchr(mode, '+')) {
         size_t length = strlen(filename);
         if (length >= 4 && !strcmp(filename + length - 4, ".obb")) {
-            // Newlib's small default buffer turns sequential archive reads
-            // into many storage calls. FILE owns/frees this larger buffer;
-            // standard fseek/ftell and EOF behavior stay in newlib.
-            if (setvbuf(ret, NULL, _IOFBF, 128 * 1024))
+            // Match the buffered path above even without loose-file tuning.
+            // FILE owns/frees the buffer; seek/tell/EOF remain in newlib.
+            if (setvbuf(ret, NULL, _IOFBF, RIO_CACHE_BLOCK_SIZE))
                 l_warn("Gangstar OBB buffering unavailable: %s", filename);
         }
     }

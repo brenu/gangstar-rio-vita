@@ -10,12 +10,20 @@ s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static int nat
 for base in (47,50):
  run('release_gate', '#include <assert.h>\n#define RIO_PHASE_NATIVE_TID 46\n#define RIO_PHASE_SUBMIT_BASE 47\n#define PHASE_BASE %d\n'%base+('#define GANGSTAR_NATIVE_IMA_FAST\n' if base==50 else '')+s[a:b]+r'''
 int main(void){
- for(unsigned i=0;i<PHASE_BASE+57;++i){
+ for(unsigned i=0;i<PHASE_BASE+60;++i){
   int expected=i==14||i==15||i==16||i==17||i==20||i==21||(i>=33&&i<=39)||i==42;
   if(PHASE_BASE==50 && i==47)expected=1;
   if(i>=PHASE_BASE)expected=i==PHASE_BASE+46||i==PHASE_BASE+50||i==PHASE_BASE+54||i==PHASE_BASE+55||i==PHASE_BASE+56;
   assert(native_probe_needed(i)==expected);
  }
+}
+''')
+for base in (47,50):
+ run('release_prefetch_gate', '#include <assert.h>\n#define RIO_PHASE_NATIVE_TID 46\n#define RIO_PHASE_SUBMIT_BASE 47\n#define PHASE_BASE %d\n#define GANGSTAR_STREAM_PREFETCH\n#define GANGSTAR_MATERIAL_PREFETCH\n'%base+s[a:b]+r'''
+int main(void){
+ assert(native_probe_needed(PHASE_BASE+57));
+ assert(native_probe_needed(PHASE_BASE+58));
+ assert(!native_probe_needed(PHASE_BASE+59)); // task tracing stays off
 }
 ''')
 run('release_wait',r'''

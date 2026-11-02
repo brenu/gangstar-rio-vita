@@ -140,3 +140,23 @@ This also defaults decoder verification and upload-stage measurements to ON;
 explicit environment overrides still take precedence. The option named
 `GANGSTAR_NATIVE_STARTUP_PROFILE` must remain ON because it also installs required
 functional hooks; release mode filters out its measurement-only hooks.
+
+For a storage comparison without diagnostic writes during gameplay:
+
+```sh
+GANGSTAR_RUNTIME_DIAGNOSTICS=ON GANGSTAR_STORAGE_TRACE=ON GANGSTAR_MEMORY_LOG=ON bash build.sh
+```
+
+This diagnostic keeps up to 2 MiB of log data in RAM; excess data is counted and
+dropped rather than written mid-run. Keep the game running after the test, then
+export and collect using:
+
+```sh
+python3 tools/vita_test.py collect VITA_IP --log-only --flush-memory-log
+```
+
+The collector requests export after gameplay and waits for completion. The game
+drains its pending log queue, writes the buffered data in bounded chunks, then
+resumes RAM buffering. Repeated collections append new data to the same log.
+A forced termination before export loses the unexported RAM log. Both optional
+diagnostic switches are OFF by default.

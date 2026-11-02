@@ -6,7 +6,7 @@
 #define RIO_SOURCE_CACHE_LIMIT (64u*1024u*1024u)
 #define RIO_SOURCE_CACHE_SLOTS 384u
 typedef struct {int archive,original;uint64_t offset;uint32_t source_size;} RioSourceKey;
-typedef struct {RioSourceKey key;void *data;size_t size;uint64_t age;unsigned priority;} RioSourceEntry;
+typedef struct {RioSourceKey key;void *data;size_t size;uint64_t age;unsigned priority,fixed;} RioSourceEntry;
 typedef struct {RioSourceEntry entries[RIO_SOURCE_CACHE_SLOTS];size_t bytes;unsigned count,evictions;uint64_t age;} RioSourceCache;
 static inline size_t rio_source_allowance(size_t cap,size_t cached,size_t used,size_t watermark,size_t reader) {
  size_t game=used>=cached?used-cached:used;
@@ -22,6 +22,28 @@ static inline void rio_source_evict(RioSourceCache *c) {
  free(e->data);memset(e,0,sizeof(*e));
 }
 static inline void rio_source_trim(RioSourceCache *c,size_t limit) {while(c->bytes>limit)rio_source_evict(c);}
+// Demand lightmaps may rotate only other demand lightmaps, never the fixed
+// generic preload. Check feasibility first so a rejected request changes nothing.
+static inline int rio_source_lightmap_room(RioSourceCache *c,size_t size,size_t limit) {
+ if(!size || size>limit || c->bytes>limit)return 0;
+ size_t available=limit-c->bytes;unsigned candidates=0;
+ for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i) {
+  RioSourceEntry *e=&c->entries[i];
+  if(e->data && e->key.original && !e->fixed){available+=e->size;++candidates;}
+ }
+ if(available<size || (c->count==RIO_SOURCE_CACHE_SLOTS && !candidates))return 0;
+ while(c->bytes>limit-size || c->count==RIO_SOURCE_CACHE_SLOTS) {
+  unsigned oldest=RIO_SOURCE_CACHE_SLOTS;
+  for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i) {
+   RioSourceEntry *e=&c->entries[i];
+   if(e->data && e->key.original && !e->fixed &&
+      (oldest==RIO_SOURCE_CACHE_SLOTS || e->age<c->entries[oldest].age))oldest=i;
+  }
+  RioSourceEntry *e=&c->entries[oldest];
+  c->bytes-=e->size;--c->count;++c->evictions;free(e->data);memset(e,0,sizeof(*e));
+ }
+ return 1;
+}
 static inline RioSourceEntry *rio_source_find(RioSourceCache *c,RioSourceKey key) {
  for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i){RioSourceEntry *e=&c->entries[i];
   if(e->data && e->key.archive==key.archive && e->key.original==key.original &&

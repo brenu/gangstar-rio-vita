@@ -27,6 +27,24 @@ int main(void) {
  rio_source_trim(&c,0);
  fail_next=1;assert(!rio_source_store(&c,a,bytes,4,8) && !c.bytes);
  assert(!rio_source_store(&c,a,bytes,4,3));
+ // Returning to a district must replace an old demand lightmap while the
+ // fixed lightmap and generic textures remain byte-for-byte available.
+ RioSourceKey generic={0,0,400,32};
+ assert(rio_source_store(&c,a,bytes,4,16));rio_source_find(&c,a)->fixed=1;
+ assert(rio_source_store(&c,generic,bytes,4,16));
+ assert(rio_source_store(&c,b,"BBBB",4,16));
+ assert(rio_source_store(&c,d,"CCCC",4,16));
+ assert(rio_source_find(&c,b)); // b is the more recently visited district.
+ assert(rio_source_lightmap_room(&c,4,16));
+ assert(!rio_source_find(&c,d) && rio_source_find(&c,b));
+ assert(rio_source_find(&c,a) && rio_source_find(&c,generic));
+ unsigned evictions=c.evictions;size_t before=c.bytes;
+ assert(!rio_source_lightmap_room(&c,12,16)); // fixed payload cannot be displaced.
+ assert(c.evictions==evictions && c.bytes==before);
+ assert(!rio_source_lightmap_room(&c,4,4)); // pressure trim belongs to caller.
+ assert(rio_source_lightmap_room(&c,8,16));
+ assert(!rio_source_find(&c,b) && rio_source_find(&c,a) && rio_source_find(&c,generic));
+ rio_source_trim(&c,0);
  for(unsigned i=0;i<2000;++i) {
   RioSourceKey key={0,0,i,8};assert(rio_source_store(&c,key,&key.offset,8,1024));
   assert(c.bytes<=1024 && c.count<=RIO_SOURCE_CACHE_SLOTS);

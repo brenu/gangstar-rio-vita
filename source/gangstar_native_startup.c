@@ -1,4 +1,9 @@
 #include "gangstar_diagnostics.h"
+#include "gangstar_stream_prefetch.h"
+#ifdef GANGSTAR_MATERIAL_PREFETCH
+#include "gangstar_material_dispatch.h"
+#include "reimpl/pthr.h"
+#endif
 #include "gangstar_registration_profile.h"
 #include "gangstar_audio_poll.h"
 #include "gangstar_phase_timing.h"
@@ -163,8 +168,35 @@ static struct Probe {
 
     ,{"_ZN20MemoryMappedFileRead10openAndMapEPKc","Stream_partial_map",{0xe92d4010,0xe1a04000},NULL,0,0}
     ,{"_ZN14CStreamTexture20getTextureFromStreamER20MemoryMappedFileReadRKSbIcSt11char_traitsIcE13GameAllocatorIcEES8_ib","Stream_partial_mips",{0xe92d4ff0,0xe59f94c0},NULL,0,0}
+    ,{"_ZN14CStreamTexture18loadHighResMipmapsEb","Stream_queued_highres",{0xe1a02000,0xe92d41f0},NULL,0,0}
+    ,{"_ZN6glitch4task12CTaskManager12dispatchTaskEPNS0_12ITaskHandlerEb","Material_dispatch",{0xe92d47f0,0xe5d0301c},NULL,0,0}
+    ,{"_ZN6glitch4task8CCpuTask3runEv","Task_read_context",{0xe92d4010,0xe5903030},NULL,0,0}
 
 };
+#ifdef GANGSTAR_STORAGE_TRACE
+// Main-thread scope only. A task can recursively run another task; restore the
+// outer context on return. The worker never reads or writes native task objects.
+typedef struct {uintptr_t task,vtable,function,function_vtable,handler;unsigned blocking;} RioTaskReadContext;
+static struct {uintptr_t task,handler;unsigned blocking;} task_read_dispatch;
+static RioTaskReadContext task_read_context;
+static unsigned task_read_trace_count;
+static uint32_t task_read_u32(uintptr_t object,unsigned offset) {
+ uint32_t value;memcpy(&value,(const void *)(object+offset),4);return value;
+}
+static void task_read_trace(unsigned probe,const char *name,uint64_t elapsed) {
+ if(probe!=13 || elapsed<20000 || task_read_trace_count>=32 || !gangstar_wait_is_main() ||
+    !name || strnlen(name,192)==192 || !strstr(name,"_lightmap"))return;
+ const char *base=strrchr(name,'/');base=base?base+1:name;
+ if(strcmp(base,"middleclass_01_lightmap00.tga") && strcmp(base,"downtown_00_lightmap00.tga") && strcmp(base,"copacabana_lightmap00.tga"))return;
+ ++task_read_trace_count;
+ l_info("RIO_TASK_READ task=0x%x task_vtable=0x%x function=0x%x function_vtable=0x%x handler=0x%x blocking=%u elapsed_us=%llu name=%s",
+  (unsigned)task_read_context.task,(unsigned)task_read_context.vtable,
+  (unsigned)task_read_context.function,(unsigned)task_read_context.function_vtable,
+  (unsigned)task_read_context.handler,task_read_context.blocking,(unsigned long long)elapsed,name);
+}
+#else
+#define task_read_trace(probe,name,elapsed) ((void)0)
+#endif
 // Generic probes use r0-r3 and return at most one word. Probe 37 has an
 // explicit five-argument wrapper; probe 38 has seven arguments.
 // A permanent trampoline keeps the original callable even on other threads;
@@ -176,6 +208,7 @@ static __attribute__((noinline)) uintptr_t probe_##N(uintptr_t a, uintptr_t b, u
     uintptr_t result = probes[N].original(a, b, c, d); \
     uint64_t elapsed = gangstar_wait_end(RIO_WAIT_NATIVE, began, (uintptr_t)__builtin_return_address(0), \
         a, 0, (int)result, probes[N].label); \
+    task_read_trace(N,(const char *)c,elapsed); \
     if (audio_began) rio_audio_phase(RIO_AUDIO_FILE+N-9,rio_diagnostic_clock()-audio_began); \
     if (began) { probes[N].us += elapsed; ++probes[N].calls; } \
     return result; \
@@ -1199,6 +1232,27 @@ static uintptr_t sequential_id_call(NativeCall original,uintptr_t a,uintptr_t b,
  return result;
 }
 static int native_probe_needed(unsigned i) {
+ if(i==PHASE_BASE+59) {
+#ifdef GANGSTAR_STORAGE_TRACE
+  return 1;
+#else
+  return 0;
+#endif
+ }
+ if(i==PHASE_BASE+58) {
+#ifdef GANGSTAR_MATERIAL_PREFETCH
+  return 1;
+#else
+  return 0;
+#endif
+ }
+ if(i==PHASE_BASE+57) {
+#ifdef GANGSTAR_STREAM_PREFETCH
+  return 1;
+#else
+  return 0;
+#endif
+ }
 #ifdef GANGSTAR_RELEASE_BUILD
  if(i<PHASE_BASE) {
   // Archive/cache/preload, audio priority/chunking, and optimized IMA only.
@@ -1296,6 +1350,60 @@ PHASE_WRAPPER(9) PHASE_WRAPPER(10) PHASE_WRAPPER(11) PHASE_WRAPPER(12) PHASE_WRA
 PHASE_WRAPPER(16) PHASE_WRAPPER(17) PHASE_WRAPPER(18) PHASE_WRAPPER(19) PHASE_WRAPPER(20) PHASE_WRAPPER(21)
 PHASE_WRAPPER(22) PHASE_WRAPPER(23) PHASE_WRAPPER(24) PHASE_WRAPPER(25) PHASE_WRAPPER(26) PHASE_WRAPPER(27) PHASE_WRAPPER(28) PHASE_WRAPPER(29)
 PHASE_WRAPPER(30) PHASE_WRAPPER(31) PHASE_WRAPPER(32) PHASE_WRAPPER(33) PHASE_WRAPPER(34) PHASE_WRAPPER(35) PHASE_WRAPPER(36) PHASE_WRAPPER(37) PHASE_WRAPPER(38) PHASE_WRAPPER(39) PHASE_WRAPPER(40) PHASE_WRAPPER(41) PHASE_WRAPPER(42) PHASE_WRAPPER(43) PHASE_WRAPPER(44) PHASE_WRAPPER(45) PHASE_WRAPPER(46) PHASE_WRAPPER(47) PHASE_WRAPPER(48) PHASE_WRAPPER(49) PHASE_WRAPPER(50) PHASE_WRAPPER(51) PHASE_WRAPPER(52) PHASE_WRAPPER(53) PHASE_WRAPPER(54)
+static uintptr_t task_read_run(uintptr_t task,uintptr_t b,uintptr_t c,uintptr_t d) {
+#ifdef GANGSTAR_STORAGE_TRACE
+ if(gangstar_wait_is_main() && task) {
+  RioTaskReadContext previous=task_read_context;
+  uintptr_t function=task_read_u32(task,0x30);
+  task_read_context=(RioTaskReadContext){task,task_read_u32(task,0),function,function?task_read_u32(function,0):0,
+   task_read_dispatch.task==task?task_read_dispatch.handler:0,
+   task_read_dispatch.task==task?task_read_dispatch.blocking:~0u};
+  uintptr_t result=probes[PHASE_BASE+59].original(task,b,c,d);
+  task_read_context=previous;return result;
+ }
+#endif
+ return probes[PHASE_BASE+59].original(task,b,c,d);
+}
+#ifdef GANGSTAR_MATERIAL_PREFETCH
+static uintptr_t material_handler_vtable,material_function_vtable,material_task_vtable;
+static void (*material_node_free)(void *);
+static void material_lock(uintptr_t mutex){pthread_mutex_lock_soloader((pthread_mutex_t_bionic *)mutex);}
+static void material_unlock(uintptr_t mutex){pthread_mutex_unlock_soloader((pthread_mutex_t_bionic *)mutex);}
+static int material_defer_task(uintptr_t task) {
+ if(rio_mat_ptr(task,0)!=material_task_vtable)return 0;
+ uintptr_t function=rio_mat_ptr(task,0x30);
+ return function && rio_material_dependencies(function,material_function_vtable,gangstar_stream_defer_name);
+}
+static void material_accept(uintptr_t handler,uintptr_t task) {
+ void (*set_task)(uintptr_t,uintptr_t)=(void *)rio_mat_ptr(rio_mat_ptr(handler,0),8);
+ set_task(handler,task);
+}
+static void material_release(uintptr_t node){material_node_free((void *)node);}
+static const RioMaterialTaskOps material_ops={material_lock,material_unlock,material_defer_task,material_accept,material_release};
+#endif
+static uintptr_t material_dispatch(uintptr_t manager,uintptr_t handler,uintptr_t blocking,uintptr_t d) {
+ uintptr_t result;
+#ifdef GANGSTAR_MATERIAL_PREFETCH
+ if(!blocking && manager && handler && gangstar_wait_is_main() && material_node_free &&
+    material_handler_vtable && material_function_vtable && material_task_vtable &&
+    rio_mat_ptr(handler,0)==material_handler_vtable)
+  result=rio_material_dispatch(manager,handler,&material_ops);
+ else
+#endif
+ result=probes[PHASE_BASE+58].original(manager,handler,blocking,d);
+#if defined(GANGSTAR_STORAGE_TRACE) && defined(GANGSTAR_MATERIAL_PREFETCH)
+ if(result && handler && gangstar_wait_is_main() && material_handler_vtable &&
+    rio_mat_ptr(handler,0)==material_handler_vtable) {
+  task_read_dispatch.task=rio_mat_ptr(handler,0x10);
+  task_read_dispatch.handler=handler;task_read_dispatch.blocking=(unsigned)blocking;
+ }
+#endif
+ return result;
+}
+static uintptr_t stream_queued_highres(uintptr_t texture,uintptr_t alpha,uintptr_t c,uintptr_t d) {
+ if(gangstar_wait_is_main() && !alpha && gangstar_stream_defer((const void *)texture))return 0;
+ return probes[PHASE_BASE+57].original(texture,alpha,c,d);
+}
 // Only the verified CStreamTexture constructor call sites may defer DDS data.
 // Each native mapped reader keeps its original size/header and its own buffer.
 // Pixel bytes are materialized immediately before native getTextureFromStream.
@@ -1362,6 +1470,8 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
    memset(slot,0,sizeof(*slot));return out;
   }
   unsigned char *data=slot->data;
+  uint32_t source_offset=slot->offset;
+  (void)source_offset;
   // Detach before the native consumer: nested loads may use another free slot.
   memset(slot,0,sizeof(*slot));
   uintptr_t result=original(out,texture,mapped,key,filename,level,flag);
@@ -1369,7 +1479,8 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
    ((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
   }
   free(data);
-  l_info("RIO_PARTIAL_LIGHTMAP requested=%u source_bytes=2796344 read_bytes=%u",(unsigned)level,128u+2796344u-start);
+  l_info("RIO_PARTIAL_LIGHTMAP frame=%u offset=%u requested=%u source_bytes=2796344 read_bytes=%u",
+   reuse_frame,source_offset,(unsigned)level,128u+2796344u-start);
   return result;
  }
  return original(out,texture,mapped,key,filename,level,flag);
@@ -1379,7 +1490,7 @@ static NativeCall wrappers[] = {probe_0, probe_1, probe_2, probe_3, probe_4, pro
 #if defined(GANGSTAR_NATIVE_ADPCM_VERIFY) || defined(GANGSTAR_NATIVE_IMA_FAST)
     ,probe_47,probe_48,probe_49
 #endif
-    ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54,stream_partial_map,(NativeCall)stream_partial_mips
+    ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54,stream_partial_map,(NativeCall)stream_partial_mips,stream_queued_highres,material_dispatch,task_read_run
 };
 _Static_assert(sizeof(wrappers)/sizeof(*wrappers)==sizeof(probes)/sizeof(*probes), "Native probe wrapper count");
 #endif
@@ -1728,6 +1839,17 @@ void gangstar_native_startup_install(void) {
 #endif
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     unsigned installed = 0;
+#ifdef GANGSTAR_MATERIAL_PREFETCH
+    material_handler_vtable=so_symbol(&so_mod,"_ZTVN6glitch4task23CCpuGraphicsTaskHandlerE");
+    material_function_vtable=so_symbol(&so_mod,"_ZTVN6glitch4task9SFunctionINS_5scene18CStreamedBatchMeshI14SSegmentExtPtr23ExtraDataHandlingPolicyNS2_25SProactiveMemoryAllocatorEE22SCreateMaterialFunctorEEE");
+    material_task_vtable=so_symbol(&so_mod,"_ZTVN6glitch4task16CCpuGraphicsTaskE");
+    if(material_handler_vtable)material_handler_vtable+=8;
+    if(material_function_vtable)material_function_vtable+=8;
+    if(material_task_vtable)material_task_vtable+=8;
+    material_node_free=(void *)so_symbol(&so_mod,"_Z10GlitchFreePv");
+    l_info("RIO_MATERIAL_PREFETCH ready=%d",material_handler_vtable && material_function_vtable && material_task_vtable && material_node_free);
+#endif
+
     partial_ctor_base=so_symbol(&so_mod,"_ZN14CStreamTextureC2EPKN5boost13intrusive_ptrIN6glitch7collada8CResFileEEERKSbIcSt11char_traitsIcENS2_4core10SAllocatorIcLNS2_6memory13E_MEMORY_HINTE0EEEEPKNS1_INS2_2io9IReadFileEEE23CompressedTextureFormatPNS2_5video15CTextureManagerEPNS3_6SImageEPKcb");
     partial_mip_bytes=(void *)so_symbol(&so_mod,"_ZN6glitch5video12pixel_format24computeMipmapSizeInBytesENS0_14E_PIXEL_FORMATEjjhb");
 #ifdef GANGSTAR_TEXTURE_PREWARM

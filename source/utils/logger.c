@@ -12,11 +12,17 @@
 
 #include <stdbool.h>
 #include <pthread.h>
+#include "gangstar_storage_trace.h"
 #include <stdint.h>
 #include <psp2/kernel/processmgr.h>
 #include "log_queue.h"
 #include <string.h>
 #include <psp2/io/fcntl.h>
+#ifdef GANGSTAR_MEMORY_LOG
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#endif
 
 static SceUID gangstar_log_fd = -1;
 
@@ -37,12 +43,58 @@ static pthread_t log_worker;
 static RioLogQueue log_queue;
 static int log_async, log_closing, log_busy;
 static uint64_t log_written, log_errors, log_write_us, log_write_worst;
+#ifdef GANGSTAR_MEMORY_LOG
+static char memory_log[2u*1024u*1024u];
+static size_t memory_used;
+static uint64_t memory_dropped;
+static int memory_active;
+// Caller holds log_lock after the async queue is drained. Export is only
+// requested after testing, so synchronous chunked writes cannot affect the run.
+static void memory_export_locked(void) {
+    size_t done=0;uint64_t began=sceKernelGetProcessTimeWide();
+    while(gangstar_log_fd>=0 && done<memory_used) {
+        size_t take=memory_used-done;if(take>16384)take=16384;
+        int n=sceIoWrite(gangstar_log_fd,memory_log+done,take);
+        if(n<=0)break;
+        done+=(size_t)n;
+    }
+    log_written+=done;
+    if(done!=memory_used)++log_errors;
+    if(gangstar_log_fd>=0)sceIoSyncByFd(gangstar_log_fd,0);
+    uint64_t elapsed=sceKernelGetProcessTimeWide()-began;
+    log_write_us+=elapsed;if(elapsed>log_write_worst)log_write_worst=elapsed;
+    char status[160];int size=sceClibSnprintf(status,sizeof(status),"exported=%u dropped_bytes=%llu complete=%d\n",
+        (unsigned)done,(unsigned long long)memory_dropped,done==memory_used);
+    int ack=sceIoOpen(DATA_PATH "memory-log.ready",SCE_O_WRONLY|SCE_O_CREAT|SCE_O_TRUNC,0666);
+    if(ack>=0){int sent=0;while(sent<size){int n=sceIoWrite(ack,status+sent,size-sent);if(n<=0)break;sent+=n;}sceIoClose(ack);}
+    // Keep buffering subsequent diagnostics, allowing an export smoke test
+    // before gameplay without turning disk logging back on.
+    if(done){memmove(memory_log,memory_log+done,memory_used-done);memory_used-=done;}
+    memory_dropped=0;
+}
+#endif
 static void log_output(const char *bytes,size_t length) {
     sceClibPrintf("%.*s", (int)length, bytes);
+#ifdef GANGSTAR_MEMORY_LOG
+    pthread_mutex_lock(&log_lock);
+    if(memory_active) {
+        if(length<=sizeof(memory_log)-memory_used) {
+            memcpy(memory_log+memory_used,bytes,length);memory_used+=length;
+        } else memory_dropped+=length;
+        pthread_mutex_unlock(&log_lock);return;
+    }
+    pthread_mutex_unlock(&log_lock);
+#endif
     size_t offset=0;
     uint64_t began=sceKernelGetProcessTimeWide();
     while (gangstar_log_fd>=0 && offset<length) {
+#ifdef GANGSTAR_STORAGE_TRACE
+        rio_storage_write(1);
+#endif
         int written=sceIoWrite(gangstar_log_fd,bytes+offset,length-offset);
+#ifdef GANGSTAR_STORAGE_TRACE
+        rio_storage_write(0);
+#endif
         if (written<=0) break;
         offset+=(size_t)written;
     }
@@ -77,6 +129,10 @@ void gangstar_log_start(void) {
 #ifdef GANGSTAR_ASYNC_LOG
     memset(&log_queue,0,sizeof(log_queue)); log_closing=log_busy=0;
     log_written=log_errors=log_write_us=log_write_worst=0;
+#ifdef GANGSTAR_MEMORY_LOG
+    memory_used=0;memory_dropped=0;memory_active=1;
+    unlink(DATA_PATH "memory-log.flush");unlink(DATA_PATH "memory-log.ready");
+#endif
     pthread_attr_t attr;
     int error=pthread_attr_init(&attr);
     if (!error) {
@@ -85,23 +141,48 @@ void gangstar_log_start(void) {
         pthread_attr_destroy(&attr);
     }
     log_async=!error;
+#ifdef GANGSTAR_MEMORY_LOG
+    if(!log_async)memory_active=0;
+#endif
 #endif
     pthread_mutex_unlock(&log_lock);
     pthread_mutex_unlock(&lifecycle_lock);
 }
 void gangstar_log_report(void) {
+#ifdef GANGSTAR_MEMORY_LOG
+    // Called only at the normal reporting point. The collector creates this
+    // marker after gameplay; until then the worker never writes port.log.
+    int saved=errno,request=open(DATA_PATH "memory-log.flush",O_RDONLY);
+    if(request>=0) {
+        close(request);unlink(DATA_PATH "memory-log.flush");
+        pthread_mutex_lock(&lifecycle_lock);
+        pthread_mutex_lock(&log_lock);
+        while(log_async && (log_queue.used || log_busy))pthread_cond_wait(&log_changed,&log_lock);
+        if(memory_active)memory_export_locked();
+        pthread_mutex_unlock(&log_lock);
+        pthread_mutex_unlock(&lifecycle_lock);
+    }
+    errno=saved;
+#endif
 #ifdef GANGSTAR_ASYNC_LOG
     pthread_mutex_lock(&log_lock);
     size_t pending=log_queue.used, peak=log_queue.peak;
     uint64_t dropped=log_queue.dropped, written=log_written, errors=log_errors;
     uint64_t elapsed=log_write_us,worst=log_write_worst;
     int active=log_async;
+#ifdef GANGSTAR_MEMORY_LOG
+    size_t buffered=memory_used;uint64_t lost=memory_dropped;int memory=memory_active;
+#endif
     log_write_us=log_write_worst=0;
     pthread_mutex_unlock(&log_lock);
     l_info("RIO_LOG async=%d pending=%u peak=%u dropped=%llu written=%llu errors=%llu worker_write_us=%llu worker_worst_us=%llu",
         active,(unsigned)pending,(unsigned)peak,(unsigned long long)dropped,
         (unsigned long long)written,(unsigned long long)errors,
         (unsigned long long)elapsed,(unsigned long long)worst);
+#ifdef GANGSTAR_MEMORY_LOG
+    l_info("RIO_LOG_MEMORY active=%d bytes=%u capacity=%u dropped_bytes=%llu",memory,
+        (unsigned)buffered,(unsigned)sizeof(memory_log),(unsigned long long)lost);
+#endif
 #endif
 }
 
@@ -150,7 +231,11 @@ void _log_print(int t, const char* fmt, ...) {
         /* Preserve error records across an immediate native crash. In
            particular, allocation diagnostics are emitted just before the
            failed caller may fault; queued writes would otherwise be lost. */
-        if (t==LT_ERROR) {
+        if (t==LT_ERROR
+#ifdef GANGSTAR_MEMORY_LOG
+            && !memory_active
+#endif
+        ) {
             while (!log_closing && (log_queue.used || log_busy))
                 pthread_cond_wait(&log_changed,&log_lock);
             size_t offset=0;
@@ -205,6 +290,9 @@ void gangstar_log_finish(void) {
     if (join) pthread_join(log_worker,NULL);
     pthread_mutex_lock(&log_lock);
     log_async=0;
+#endif
+#ifdef GANGSTAR_MEMORY_LOG
+    if(memory_active){memory_export_locked();memory_active=0;}
 #endif
     SceUID fd=gangstar_log_fd; gangstar_log_fd=-1;
     pthread_mutex_unlock(&log_lock);

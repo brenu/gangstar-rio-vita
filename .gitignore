@@ -2,6 +2,7 @@
 *.apk
 *.aab
 *.obb
+lightmaps.lz4
 *.so
 *.so.*
 /game-data/

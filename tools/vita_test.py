@@ -354,6 +354,7 @@ def main():
     parser.add_argument("--direct-write", action="store_true", help="Update installed files directly after saving local backups, then verify")
     parser.add_argument("--vpk", type=Path, help="VPK used by deploy or install-probe")
     parser.add_argument("--log-only", action="store_true", help="Read startup log without downloading cores")
+    parser.add_argument("--flush-memory-log", action="store_true", help="After gameplay, request RAM diagnostic export and wait for completion before collecting")
     parser.add_argument("--hud-textures", action="store_true", help="Collect ETC1 atlas dumps from a HUD trace")
     parser.add_argument("--hud-trace", action="store_true", help="Request and collect one frame of HUD draw inputs")
     parser.add_argument("--existing-hud-trace", action="store_true", help="Download the last completed draw trace without requesting another frame")
@@ -448,6 +449,25 @@ def main():
                     except ftplib.error_perm as exc:
                         print("OBB path:", remote, str(exc))
             return
+        if args.flush_memory_log:
+            if args.action != "collect":
+                raise RuntimeError("RAM log export is only supported during collect")
+            ready=DATA+"/memory-log.ready"
+            try:ftp.delete(ready)
+            except ftplib.error_perm:pass
+            ftp.storbinary("STOR "+DATA+"/memory-log.flush",io.BytesIO(b"export after gameplay\n"))
+            deadline=time.monotonic()+45
+            while time.monotonic()<deadline:
+                try:
+                    status=download(ftp,ready)
+                    if b"dropped_bytes=" in status and status.endswith(b"\n"):
+                        if b"complete=1" not in status:raise RuntimeError("RAM log export incomplete: "+status.decode(errors="replace"))
+                        break
+                except ftplib.error_perm:
+                    pass
+                time.sleep(1)
+            else:raise RuntimeError("RAM log export not acknowledged; leave game running and retry after it reaches the frame loop")
+            print("RAM log export:",status.decode(errors="replace").strip(),flush=True)
         folder = ROOT / "work/hardware" / time.strftime("companion-%Y%m%d-%H%M%S")
         folder.mkdir(parents=True, exist_ok=False)
         if args.hud_trace:

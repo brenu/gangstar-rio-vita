@@ -1,4 +1,10 @@
 : "${GANGSTAR_RUNTIME_DIAGNOSTICS:=OFF}"
+: "${GANGSTAR_LIGHTMAP_BENCH:=OFF}"
+: "${GANGSTAR_LIGHTMAP_PACK:=OFF}"
+: "${GANGSTAR_STORAGE_TRACE:=OFF}"
+: "${GANGSTAR_MEMORY_LOG:=OFF}"
+: "${GANGSTAR_STREAM_PREFETCH:=ON}"
+: "${GANGSTAR_MATERIAL_PREFETCH:=ON}"
 # Tested gameplay profile. Existing environment values take precedence.
 # Cache: 32 MiB / 32 KiB; actual allocation is checked at startup.
 : "${GANGSTAR_HEAP_TRACE:=OFF}"

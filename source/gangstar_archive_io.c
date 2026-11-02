@@ -1,4 +1,5 @@
 #include "gangstar_audio_probe.h"
+#include "gangstar_storage_trace.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_prefetch_policy.h"
 #include "utils/logger.h"
@@ -295,9 +296,14 @@ static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t o
     if (offset > INT32_MAX) { errno = EOVERFLOW; return -1; }
     uint64_t started = (io->tracing || io->audio) ? trace_clock() : 0;
     ssize_t result;
-    // Newlib pread may emulate seek/read/restore. Serialize physical reads on
-    // duplicates of the same root; logical cursor changes never touch it.
+    // Retain existing serialization while measuring lock wait separately.
+#ifdef GANGSTAR_STORAGE_TRACE
+    struct RioStorageSample storage=rio_storage_begin();
+#endif
     pthread_mutex_lock(&physical_lock[io->archive]);
+#ifdef GANGSTAR_STORAGE_TRACE
+    rio_storage_locked(&storage);
+#endif
 #if defined(__vita__) && defined(GANGSTAR_NATIVE_ARCHIVE_IO)
     int native = native_fds[io->archive];
     if (native >= 0) {
@@ -316,6 +322,9 @@ static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t o
 #endif
     int saved_errno = errno;
     pthread_mutex_unlock(&physical_lock[io->archive]);
+#ifdef GANGSTAR_STORAGE_TRACE
+    rio_storage_end(storage,(unsigned)io->archive,offset,size,(int)result);
+#endif
     if (io->tracing || io->audio) {
         uint64_t elapsed=trace_clock()-started;
         if(io->audio)trace_audio_phase(RIO_AUDIO_DISK,elapsed);

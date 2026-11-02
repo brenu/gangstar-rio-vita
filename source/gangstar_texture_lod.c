@@ -1,6 +1,7 @@
 #include "gangstar_texture_lod.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_source_cache.h"
+#include "gangstar_lightmap_pack.h"
 #include "utils/logger.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -55,7 +56,9 @@ static int read_exact(int fd, void *data, size_t length, uint64_t offset,int bac
         // Outside any cache/descriptor lock: foreground/audio reads take priority.
         while(background && gangstar_archive_demand_busy())sceKernelDelayThread(1000);
 #endif
-        size_t take=length-done;if(background && take>64u*1024u)take=64u*1024u;
+        size_t take=length-done;
+        size_t chunk=background==2?16u*1024u:64u*1024u;
+        if(background && take>chunk)take=chunk;
         ssize_t n = gangstar_archive_pread(fd, (char *)data + done, take, offset + done);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return 0;
@@ -76,7 +79,7 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     pthread_mutex_lock(&source_lock);
     size_t cache_limit=source_budget(size), cached_size=0;
     RioSourceKey key={archive,original,offset,size};
-    if(background && (!source_priority(key) || rio_source_find(&source_cache,key))) {pthread_mutex_unlock(&source_lock);return NULL;}
+    if(background && ((background==1 && !source_priority(key)) || rio_source_find(&source_cache,key))) {pthread_mutex_unlock(&source_lock);return NULL;}
     void *cached=rio_source_clone(&source_cache,key,&cached_size);
     if(cached) {
         ++source_hits;source_hit_bytes+=cached_size;++made;saved+=size-cached_size;
@@ -86,11 +89,10 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     }
     if(rio_source_find(&source_cache,key)) {rio_source_trim(&source_cache,0);cache_limit=0;}
     ++source_misses;
-    // A native miss reads the whole lightmap anyway. Retain that first read
-    // only in spare cache space; never displace the fixed startup preload.
-    int spare_fill=original && !source_preloading && !background;
-    if(spare_fill && (source_cache.count==RIO_SOURCE_CACHE_SLOTS ||
-        source_cache.bytes>cache_limit || size>cache_limit-source_cache.bytes)) {
+    // A native miss reads the whole lightmap anyway. Rotate older demand
+    // lightmaps within the spare space; never displace the fixed preload.
+    int spare_fill=original && !source_preloading && background!=1;
+    if(spare_fill && !rio_source_lightmap_room(&source_cache,size,cache_limit)) {
         ++original_streamed;pthread_mutex_unlock(&source_lock);return NULL;
     }
     int *fds=source_fds[background!=0];
@@ -119,9 +121,13 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
         cache_limit=0;data=malloc(plan.output_size);
     }
     if (!data) { ++rejected; return NULL; }
-    memcpy(data, plan.header, 128);
-    if (!read_exact(fds[archive], (char *)data + 128, plan.output_size - 128, offset + 128 + plan.skip,background)) {
-        free(data); ++rejected; return NULL;
+    if(!(original && !background && gangstar_lightmap_pack_read((uint32_t)offset,size,data))) {
+        // A failed/corrupt optional cache may have touched the destination.
+        // Restore the verified original header and overwrite the whole payload.
+        memcpy(data, plan.header, 128);
+        if (!read_exact(fds[archive], (char *)data + 128, plan.output_size - 128, offset + 128 + plan.skip,background)) {
+            free(data); ++rejected; return NULL;
+        }
     }
     pthread_mutex_lock(&source_lock);
     cache_limit=source_budget(0);
@@ -130,9 +136,10 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     size_t available=cache_limit>source_cache.bytes?cache_limit-source_cache.bytes:0;
     for(unsigned i=0;i<RIO_SOURCE_CACHE_SLOTS;++i)
         if(source_cache.entries[i].data && source_cache.entries[i].priority<=priority)available+=source_cache.entries[i].size;
-    if(spare_fill)available=cache_limit>source_cache.bytes?cache_limit-source_cache.bytes:0;
+    if(spare_fill)available=rio_source_lightmap_room(&source_cache,plan.output_size,cache_limit)?plan.output_size:0;
     if(available>=plan.output_size && (!spare_fill || source_cache.count<RIO_SOURCE_CACHE_SLOTS))rio_source_store(&source_cache,key,data,plan.output_size,cache_limit);
-    RioSourceEntry *retained=rio_source_find(&source_cache,key);if(retained)retained->priority=priority;
+    RioSourceEntry *retained=rio_source_find(&source_cache,key);
+    if(retained){retained->priority=priority;retained->fixed=rio_lod_preload_source(name);}
     pthread_mutex_unlock(&source_lock);
     // Native destruction calls the imported free, which removes this entry.
     if (!background && gangstar_host_heap_allocated)
@@ -180,6 +187,19 @@ const void *gangstar_texture_lod_get(int archive,uint64_t offset,uint32_t size,
 const void *gangstar_texture_original_get(int archive,uint64_t offset,uint32_t size,
     const char *name,uint32_t *output_size) {
     return texture_source_get(archive,offset,size,name,output_size,1,0);
+}
+int gangstar_texture_source_cached(uint32_t offset,uint32_t size) {
+#ifdef GANGSTAR_SMALL_LIGHTMAPS
+ RioSourceKey key={0,1,offset,size};
+ pthread_mutex_lock(&source_lock);int found=rio_source_find(&source_cache,key)!=NULL;pthread_mutex_unlock(&source_lock);
+ return found;
+#else
+ (void)offset;(void)size;return 0;
+#endif
+}
+int gangstar_texture_source_prepare(uint32_t offset,uint32_t size,const char *name) {
+ uint32_t length=0;void *data=(void *)texture_source_get(0,offset,size,name,&length,1,2);
+ free(data);return gangstar_texture_source_cached(offset,size);
 }
 void gangstar_texture_source_priorities(const RioTextureSourcePriority *priorities,unsigned count) {
 #ifdef GANGSTAR_SMALL_LIGHTMAPS

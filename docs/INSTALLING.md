@@ -72,6 +72,7 @@ For reference, the supported files have these sizes:
 
 Matching sizes alone do not confirm the revision; the preparation script verifies hashes as well.
 
+
 ## 3. Copy the four files to the Vita
 
 Use VitaShell's USB or FTP mode. The final layout must be:
@@ -90,7 +91,7 @@ Copy the **contents** of the prepared `gangstarrio` folder into that directory. 
 
 Copy `work/build/gangstar_rio_wip.vpk` from your computer to the Vita, for example to `ux0:/data/`. In VitaShell, select the VPK, press X and follow the installation prompts.
 
-The application title is **Gangstar Rio - WIP** and its title ID is `G4HM00001`. Once installation finishes, launch its bubble from the home screen.
+The application title is **Gangstar Rio** and its title ID is `G4HM00001`. Once installation finishes, launch its bubble from the home screen.
 
 ## 5. First launch
 

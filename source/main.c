@@ -48,6 +48,10 @@ void gangstar_audio_output_report(void);
 
 static int gangstar_main(void) {
     soloader_init_all();
+#ifdef GANGSTAR_LIGHTMAP_BENCH
+    extern void gangstar_lightmap_benchmark(void);
+    gangstar_lightmap_benchmark();
+#endif
     gangstar_archive_init();
 #ifdef GANGSTAR_LOOSE_PATH_INDEX
     l_info("RIO_LOOSE_INDEX startup_absent=%u",rio_loose_index_init(DATA_PATH));

@@ -785,7 +785,19 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		mip_count = mip_level;
 		tex_width = w;
 		tex_height = h;
-		texture_data = gpu_alloc_mapped_for_gpu(tex_size);
+        texture_data = NULL;
+#ifdef VGL_ETC1_RESERVE_MIPS
+        const size_t initial_size=vgl_etc1_mip_reserve(profile_etc && !uncompressed,0,w,h,tex_size);
+        if (initial_size>(size_t)tex_size) {
+            // Reservation must not force GC/GPU waits. If spare mapped memory
+            // is unavailable, retain the original base-only allocation path.
+            texture_data=gpu_alloc_mapped_aligned_for_gpu_inner(MEM_ALIGNMENT,initial_size);
+            if (texture_data)
+                upload_stage(4,upload_clock(profile_etc),initial_size);
+        }
+#endif
+        if (!texture_data)
+            texture_data = gpu_alloc_mapped_for_gpu(tex_size);
 		if (!texture_data) { SET_GL_ERROR(GL_OUT_OF_MEMORY) }
 		if (texture_data && tex->status == TEX_VALID)
 			gpu_free_texture_data(tex);

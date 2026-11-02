@@ -11,7 +11,7 @@ project(so_loader C CXX)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 # Vita application configuration
-set(VITA_APP_NAME "Gangstar Rio - WIP")
+set(VITA_APP_NAME "Gangstar Rio")
 set(VITA_TITLEID "G4HM00001")
 set(VITA_VPKNAME "gangstar_rio_wip")
 set(VITA_VERSION "01.00")
@@ -55,6 +55,35 @@ if (DUMP_COMPILED_SHADERS)
 endif()
 
 option(GANGSTAR_RUNTIME_DIAGNOSTICS "Enable gameplay timing, sampled profiling and verbose logs" OFF)
+option(GANGSTAR_LIGHTMAP_BENCH "Run optional private-input startup compression benchmark" OFF)
+option(GANGSTAR_LIGHTMAP_PACK "Use an optional private lossless lightmap cache" OFF)
+option(GANGSTAR_STORAGE_TRACE "Measure slow physical reads, lock waits and I/O overlap" OFF)
+option(GANGSTAR_STREAM_PREFETCH "Prepare queued lightmap bytes off the frame thread" ON)
+option(GANGSTAR_MATERIAL_PREFETCH "Keep streamed material tasks pending during lightmap reads" ON)
+if(GANGSTAR_MATERIAL_PREFETCH)
+  if(NOT GANGSTAR_STREAM_PREFETCH)
+    message(FATAL_ERROR "Material preparation requires stream preparation")
+  endif()
+  add_definitions(-DGANGSTAR_MATERIAL_PREFETCH)
+endif()
+if(GANGSTAR_STREAM_PREFETCH)
+  add_definitions(-DGANGSTAR_STREAM_PREFETCH)
+endif()
+if(GANGSTAR_STORAGE_TRACE)
+  if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
+    message(FATAL_ERROR "Storage trace requires runtime diagnostics")
+  endif()
+  add_definitions(-DGANGSTAR_STORAGE_TRACE)
+endif()
+if(GANGSTAR_LIGHTMAP_PACK)
+  add_definitions(-DGANGSTAR_LIGHTMAP_PACK)
+endif()
+if(GANGSTAR_LIGHTMAP_BENCH)
+  if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
+    message(FATAL_ERROR "Lightmap benchmark requires runtime diagnostics")
+  endif()
+  add_definitions(-DGANGSTAR_LIGHTMAP_BENCH)
+endif()
 if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
   add_definitions(-DGANGSTAR_RELEASE_BUILD)
 endif()
@@ -147,6 +176,13 @@ if (GANGSTAR_QUEUED_MUTEX)
 endif()
 option(GANGSTAR_UPLOAD_STAGES "Measure native ETC upload allocation and swizzle stages" OFF)
 option(GANGSTAR_ASYNC_LOG "Write diagnostic records on a bounded background logger" OFF)
+option(GANGSTAR_MEMORY_LOG "Hold diagnostics in RAM until explicit post-test export" OFF)
+if(GANGSTAR_MEMORY_LOG)
+  if(NOT GANGSTAR_ASYNC_LOG OR NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
+    message(FATAL_ERROR "Memory logging requires async logging and runtime diagnostics")
+  endif()
+  add_definitions(-DGANGSTAR_MEMORY_LOG)
+endif()
 if (GANGSTAR_ASYNC_LOG)
   add_definitions(-DGANGSTAR_ASYNC_LOG)
 endif()
@@ -225,6 +261,9 @@ if (GANGSTAR_SMALL_LIGHTMAPS)
     message(FATAL_ERROR "Small lightmaps require GANGSTAR_NATIVE_STARTUP_PROFILE=ON")
   endif()
   add_definitions(-DGANGSTAR_SMALL_LIGHTMAPS)
+endif()
+if(GANGSTAR_STREAM_PREFETCH AND (NOT GANGSTAR_SMALL_LIGHTMAPS OR NOT GANGSTAR_NATIVE_STARTUP_PROFILE))
+  message(FATAL_ERROR "Stream preparation requires source lightmap caching and native hooks")
 endif()
 if (GANGSTAR_ASSET_PREFETCH)
   if (NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
@@ -322,6 +361,10 @@ else ()
 endif()
 
 set(SOURCES
+    source/gangstar_lightmap_bench.c
+    source/gangstar_lightmap_pack.c
+    source/gangstar_storage_trace.c
+    source/gangstar_stream_prefetch.c
     source/main.c
     source/gangstar_platform.c
     source/gangstar_platform_data.c
@@ -381,6 +424,9 @@ list(APPEND SOURCES
 
 add_library(rio_adpcm STATIC source/gangstar_adpcm.c source/gangstar_adpcm_stream.c)
 target_compile_options(rio_adpcm PRIVATE -O3)
+if(GANGSTAR_LIGHTMAP_BENCH OR GANGSTAR_LIGHTMAP_PACK)
+  list(APPEND SOURCES lib/lz4/lz4.c)
+endif()
 add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
 target_link_libraries(${CMAKE_PROJECT_NAME} rio_adpcm)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
@@ -529,6 +575,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM
 
 target_include_directories(${CMAKE_PROJECT_NAME}
                            PUBLIC ${CMAKE_SOURCE_DIR}/source
+                           PRIVATE ${CMAKE_SOURCE_DIR}/lib/lz4
                            )
 
 

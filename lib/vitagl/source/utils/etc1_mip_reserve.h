@@ -1,13 +1,14 @@
 #ifndef VGL_ETC1_MIP_RESERVE_H
 #define VGL_ETC1_MIP_RESERVE_H
 #include <stddef.h>
-// Start reservation only once a second mip is requested. Base-only textures
-// keep their original allocation. Visible mip count is never advanced here.
+// Reserve large native ETC1 chains at the first upload, avoiding a later
+// base-level migration. Small base-only textures retain their old allocation.
+// Visible mip count is never advanced here.
 static inline int vgl_etc1_reserve_layout(int native_etc,int level,unsigned w,unsigned h) {
     if(!native_etc || !w || !h || w>4096 || h>4096 || (w&(w-1)) || (h&(h-1))) return 0;
     unsigned maximum=w>h?w:h,last=0;
     for(unsigned edge=maximum;edge>1;edge>>=1)++last;
-    return level>=1 && (unsigned)level<=last;
+    return level>=0 && (unsigned)level<=last && (level || (w>=512 && h>=512));
 }
 static inline size_t vgl_etc1_mip_reserve(int native_etc,int level,unsigned w,unsigned h,size_t required) {
     if (!vgl_etc1_reserve_layout(native_etc,level,w,h)) return required;

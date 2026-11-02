@@ -3,6 +3,15 @@ set -euo pipefail
 GANGSTAR_TEST_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$GANGSTAR_TEST_ROOT"
 python3 tools/test_build_profile.py
+python3 tools/test_gangstar_lightmap_bench.py
+python3 tools/test_gangstar_lightmap_pack.py
+python3 tools/test_gangstar_storage_trace.py
+python3 tools/test_gangstar_memory_log.py
+python3 tools/test_gangstar_stream_prefetch.py
+cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_material_dispatch.c -o work/tests/material_dispatch
+python3 tools/test_gangstar_material_dispatch.py
+python3 tools/test_gangstar_task_read.py
+work/tests/material_dispatch
 mkdir -p work/tests
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_buttons.c -o work/tests/gangstar_buttons
 work/tests/gangstar_buttons
@@ -30,6 +39,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gang
 work/tests/gangstar_alpha_overwrite
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_etc_reserve.c -o work/tests/gangstar_etc_reserve
 work/tests/gangstar_etc_reserve
+python3 tools/test_gangstar_etc_initial.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_retire_queue.c -o work/tests/gangstar_retire_queue
 work/tests/gangstar_retire_queue
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_compressed_mips.c -o work/tests/gangstar_compressed_mips
@@ -51,6 +61,8 @@ done
 cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_TEXTURE_LOD_EDGE=512 -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source -pthread source/gangstar_texture_lod.c tools/test_gangstar_texture_lod.c -o work/tests/gangstar_world_texture_lod
 work/tests/gangstar_world_texture_lod --original
 work/tests/gangstar_world_texture_lod
+cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_LIGHTMAP_PACK -DGANGSTAR_TEXTURE_LOD_EDGE=512 -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source -pthread source/gangstar_texture_lod.c tools/test_gangstar_texture_lod.c -o work/tests/gangstar_packed_texture_lod
+work/tests/gangstar_packed_texture_lod --original
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_pak_lookup.c -o work/tests/gangstar_pak_lookup
 work/tests/gangstar_pak_lookup
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_pedals.c -o work/tests/gangstar_pedals

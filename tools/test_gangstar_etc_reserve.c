@@ -8,7 +8,7 @@ int main(void) {
     for(unsigned level=0;level<10;++level) {
         end+=payloads[level];
         size_t reserved=vgl_etc1_mip_reserve(1,(int)level,512,512,end);
-        assert(reserved==(level?174776:131072));
+        assert(reserved==174776);
         assert(reserved>=end);
         // Prefix offsets and uploaded level sizes stay identical to old layout.
         assert(end-payloads[level]+payloads[level]<=reserved);
@@ -28,7 +28,7 @@ int main(void) {
     for(unsigned level=0;level<11;++level) {
         rectangle_end+=rectangle[level];
         size_t reserved=vgl_etc1_mip_reserve(1,(int)level,512,1024,rectangle_end);
-        assert(reserved==(level?349544:262144));
+        assert(reserved==349544);
         assert(vgl_etc1_mip_reserve(1,(int)level,1024,512,rectangle_end)==reserved);
         assert(reserved>=rectangle_end);
     }
@@ -43,5 +43,8 @@ int main(void) {
     assert(vgl_etc1_mip_reserve(1,10,512,512,174784)==174784);
     assert(vgl_etc1_mip_reserve(1,-1,512,512,8)==8);
     assert(vgl_etc1_mip_reserve(1,1,512,512,200000)==200000);
-    puts("ETC mip reservation: exact complete-chain byte bound, unchanged base-only/other layouts, smallest mips and level guards passed");
+    assert(vgl_etc1_mip_reserve(1,0,256,256,32768)==32768);
+    assert(vgl_etc1_mip_reserve(1,0,2048,2048,2097152)==2796216);
+    assert(vgl_etc1_mip_reserve(0,0,2048,2048,2097152)==2097152);
+    puts("ETC mip reservation: complete-chain bound from first large upload, small/other layouts unchanged, level guards passed");
 }
