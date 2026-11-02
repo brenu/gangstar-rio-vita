@@ -3,6 +3,7 @@
 #include "utils/logger.h"
 #include "utils/dialog.h"
 #include "gangstar_trophies.h"
+#include "gangstar_save_identity.h"
 #include "gangstar_iap_offline.h"
 #include "gangstar_jni_classes.h"
 #include "gangstar_jni_strings.h"
@@ -23,19 +24,15 @@ extern so_module so_mod;
 static const char *installation_id(void) {
     static char value[48];
     if (*value) return value;
-    FILE *f = fopen(DATA_PATH "installation-id.txt", "r");
-    if (f) {
-        int count = fscanf(f, "%47s", value); fclose(f);
-        if (count == 1) return value;
-    }
-    snprintf(value, sizeof(value), "vita-%08lx%08lx", (unsigned long)time(NULL),
+    char fresh[RIO_SAVE_ID_CAP],error[256];
+    snprintf(fresh,sizeof(fresh),"vita-%08lx%08lx",(unsigned long)time(NULL),
         (unsigned long)sceKernelGetProcessTimeWide());
-    f = fopen(DATA_PATH "installation-id.txt", "w");
-    if (!f) fatal_error("Gangstar: cannot save installation identifier");
-    int ok = fprintf(f, "%s\n", value) > 0;
-    if (fclose(f) || !ok) fatal_error("Gangstar: cannot persist installation identifier");
+    if(!gangstar_save_prepare(DATA_PATH,fresh,value,error,sizeof(error)))
+        save_protection_error(error);
     return value;
 }
+// Run before any native game initialization can validate or reset progress.
+void gangstar_save_startup(void){(void)installation_id();}
 static int accelerometer_enabled;
 void gangstar_java_poll(void) {
     gangstar_iap_offline_poll();

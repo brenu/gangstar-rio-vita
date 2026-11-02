@@ -34,5 +34,5 @@ int main(void){unsigned char material[64]={0};uintptr_t ptr=(uintptr_t)&name;mem
 p=Path('work/tests/clone_name.c');p.write_text(prefix+s[a:b]+main)
 for flags in ([],['-fsanitize=address,undefined','-fno-omit-frame-pointer']):
  subprocess.run(['cc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',*flags,str(p),'-o','work/tests/clone_name'],check=True)
- subprocess.run(['work/tests/clone_name'],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
+ subprocess.run(['work/tests/clone_name'],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0','UBSAN_OPTIONS':'halt_on_error=1'})
 print('Clone name: exact string identity, atomic owned references, scope expiry, explicit-name and no-create fallback, 10000 balanced clone lifetimes (ASan/UBSan)')

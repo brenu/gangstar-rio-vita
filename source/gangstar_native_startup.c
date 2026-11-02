@@ -1282,7 +1282,8 @@ static uint64_t clone_name_hits;
 static uintptr_t submit_native_call(unsigned kind,NativeCall original,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
  if(kind==3) {
   uintptr_t previous=clone_name_data;
-  clone_name_data=(!b && a)?*(uintptr_t *)(a+28):0;
+  clone_name_data=0;
+  if(!b && a)memcpy(&clone_name_data,(const void *)(a+28),sizeof(clone_name_data));
   uintptr_t result=original(a,b,c,d);
   clone_name_data=previous;return result;
  }
@@ -1402,6 +1403,15 @@ static uintptr_t material_dispatch(uintptr_t manager,uintptr_t handler,uintptr_t
 }
 static uintptr_t stream_queued_highres(uintptr_t texture,uintptr_t alpha,uintptr_t c,uintptr_t d) {
  if(gangstar_wait_is_main() && !alpha && gangstar_stream_defer((const void *)texture))return 0;
+#ifdef GANGSTAR_UPLOAD_STAGES
+ if(gangstar_wait_is_main() && !alpha && texture) {
+  const char *name;memcpy(&name,(const char *)texture+0x78,sizeof(name));
+  const char *previous=gangstar_texture_fault_scope(name);
+  uintptr_t result=probes[PHASE_BASE+57].original(texture,alpha,c,d);
+  gangstar_texture_fault_scope(previous);
+  return result;
+ }
+#endif
  return probes[PHASE_BASE+57].original(texture,alpha,c,d);
 }
 // Only the verified CStreamTexture constructor call sites may defer DDS data.

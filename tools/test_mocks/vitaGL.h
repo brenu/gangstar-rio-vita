@@ -1,5 +1,8 @@
 #ifndef TEST_VITAGL_H
 #define TEST_VITAGL_H
+#include <stddef.h>
+typedef enum { VGL_MEM_VRAM, VGL_MEM_RAM, VGL_MEM_SLOW } vglMemType;
+size_t vglMemFree(vglMemType);
 typedef unsigned GLenum;
 typedef int GLint;
 typedef int GLsizei;

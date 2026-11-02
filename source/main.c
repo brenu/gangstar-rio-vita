@@ -33,6 +33,7 @@ const SceUInt32 sceUserMainThreadStackSize = 8 * 1024 * 1024;
 so_module so_mod;
 static jclass gangstar_game_class;
 void gangstar_java_install(void);
+void gangstar_save_startup(void);
 void gangstar_java_poll(void);
 void gangstar_capture(unsigned frame);
 int gangstar_sync_selftest(void);
@@ -48,6 +49,7 @@ void gangstar_audio_output_report(void);
 
 static int gangstar_main(void) {
     soloader_init_all();
+    gangstar_save_startup();
 #ifdef GANGSTAR_LIGHTMAP_BENCH
     extern void gangstar_lightmap_benchmark(void);
     gangstar_lightmap_benchmark();

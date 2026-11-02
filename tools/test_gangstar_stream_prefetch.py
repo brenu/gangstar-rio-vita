@@ -36,6 +36,8 @@ typedef uintptr_t (*NativeCall)(uintptr_t,uintptr_t,uintptr_t,uintptr_t);
 struct {NativeCall original;} probes[58];
 #define PHASE_BASE 0
 static int is_main=1,forwarded;
+static const char *fault_scope;
+static const char *gangstar_texture_fault_scope(const char *name){const char *old=fault_scope;fault_scope=name;return old;}
 static int gangstar_wait_is_main(void){return is_main;}
 static uintptr_t native(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d){assert(a && c==3 && d==4);(void)b;++forwarded;return 77;}
 ''' + wrapper + r'''
@@ -63,8 +65,9 @@ int main(int argc,char **argv){
  succeed=0;entered=0;assert(gangstar_stream_defer(other));wait_enter();wait_done();
  assert(!gangstar_stream_defer(other));assert(prepare_calls==2);
  assert(stream_queued_highres((uintptr_t)other,0,3,4)==77 && forwarded==3);
+ assert(!fault_scope);
 }
 ''')
- exe=d/'test';subprocess.run(['cc','-std=c11','-D_XOPEN_SOURCE=700','-O2','-Wall','-Wextra','-Werror','-DGANGSTAR_STREAM_PREFETCH','-DDEBUG_SOLOADER','-I'+str(d),'-Isource',str(h),'-pthread','-Wl,--wrap=pthread_create','-o',str(exe)],check=True)
+ exe=d/'test';subprocess.run(['cc','-std=c11','-D_XOPEN_SOURCE=700','-O2','-Wall','-Wextra','-Werror','-DGANGSTAR_UPLOAD_STAGES','-DGANGSTAR_STREAM_PREFETCH','-DDEBUG_SOLOADER','-I'+str(d),'-Isource',str(h),'-pthread','-Wl,--wrap=pthread_create','-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=10);subprocess.run([str(exe),'thread-failure'],check=True,timeout=10)
 print('Queued stream: exact native signature, low-res/state/material guards, no worker native pointers, one job, timeout/failure fallback and original forwarding passed')

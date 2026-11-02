@@ -4,8 +4,44 @@
 #include <psp2/kernel/threadmgr.h>
 #include <stdatomic.h>
 static atomic_int frame_thread;
+#ifdef GANGSTAR_UPLOAD_STAGES
+#include <malloc.h>
+#include <stdio.h>
+#include "gangstar_texture_fault.h"
+extern void gangstar_texture_census(unsigned[6]) __attribute__((weak));
+extern void gangstar_gc_census(uint64_t[9]) __attribute__((weak));
+static RioTextureFault texture_fault;
+static const char *texture_fault_name;
+const char *gangstar_texture_fault_scope(const char *name) {
+    const char *previous=texture_fault_name;
+    texture_fault_name=name;
+    // A selected GL slot must never outlive the native upload scope: the slot
+    // can be deleted/reused on the next load.
+    if (!name) texture_fault.selected=0;
+    return previous;
+}
+int gangstar_texture_fault_inject(const void *texture,int level,unsigned w,unsigned h) {
+    if (atomic_load_explicit(&frame_thread,memory_order_relaxed)!=sceKernelGetThreadId()) return 0;
+    int first=texture_fault.armed;
+    int fail=rio_texture_fault(&texture_fault,texture_fault_name,(uintptr_t)texture,level,w,h);
+    if (fail && first)
+        l_warn("RIO_TEXTURE_FAULT injected=1 texture=%p level=%d name=%s",texture,level,texture_fault_name);
+    return fail;
+}
+#endif
 static GangstarAssetPerf stats;
 static unsigned frame_number=(unsigned)-1;
+void gangstar_texture_prefix_fallback(const void *texture,int level,unsigned kept) {
+    static atomic_uint reported;
+    if (atomic_fetch_add(&reported,1)<32)
+        l_warn("RIO_TEXTURE_PREFIX_FALLBACK texture=%p rejected_level=%d kept_levels=%u",texture,level,kept);
+}
+void gangstar_texture_alloc_failure(const void *texture,int level,unsigned width,unsigned height,size_t required) {
+    static atomic_uint reported;
+    if (atomic_fetch_add(&reported,1) < 32)
+        l_error("RIO_TEXTURE_OOM texture=%p level=%d width=%u height=%u required=%u",
+            texture,level,width,height,(unsigned)required);
+}
 void gangstar_upload_layout_error(int level,unsigned base_w,unsigned base_h,unsigned w,unsigned h) {
     static atomic_uint reported;
     if (atomic_fetch_add(&reported,1) < 16)
@@ -40,6 +76,20 @@ static void upload_call(unsigned api,uint64_t began,uint64_t elapsed,GLint level
 void gangstar_asset_frame(void) {
     ++frame_number;
     atomic_store_explicit(&frame_thread, sceKernelGetThreadId(), memory_order_relaxed);
+#if defined(GANGSTAR_UPLOAD_STAGES) && defined(DATA_PATH)
+    static int checked_fault;
+    if (!checked_fault) {
+        checked_fault=1;
+        FILE *f=fopen(DATA_PATH "texture-oom.once","rb");
+        if (f) {
+            char request[8]={0};size_t n=fread(request,1,sizeof(request),f);fclose(f);
+            if (n==5 && !memcmp(request,"mip5\n",5) && !remove(DATA_PATH "texture-oom.once")) {
+                texture_fault.armed=1;
+                l_warn("RIO_TEXTURE_FAULT armed=1 mode=large_lightmap_mip_tail one_shot=1");
+            }
+        }
+    }
+#endif
     stats = (GangstarAssetPerf){0};
 }
 GangstarAssetPerf gangstar_asset_stats(void) { return stats; }
@@ -134,6 +184,32 @@ void gangstar_upload_fallback(unsigned level,unsigned width,unsigned height,size
         frame_number,level,width,height,pool,available,required,reserved,pool_free};
 }
 void gangstar_upload_report(void) {
+#ifdef GANGSTAR_UPLOAD_STAGES
+    static uint64_t next_census;
+    uint64_t now = sceKernelGetProcessTimeWide();
+    if (gangstar_texture_census && now >= next_census) {
+        unsigned counts[6];
+        gangstar_texture_census(counts);
+#if defined(__GLIBC__)
+        struct mallinfo2 heap = mallinfo2();
+#else
+        struct mallinfo heap = mallinfo();
+#endif
+        l_info("RIO_TEXTURE_MEMORY frame=%u slots=%u incomplete=%u valid=%u null_data=%u mipmapped=%u attached=%u heap_used=%u heap_free=%u vram_free=%u ram_free=%u physical_free=%u",
+            frame_number,counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],
+            (unsigned)heap.uordblks,(unsigned)heap.fordblks,
+            (unsigned)vglMemFree(VGL_MEM_VRAM),(unsigned)vglMemFree(VGL_MEM_RAM),
+            (unsigned)vglMemFree(VGL_MEM_SLOW));
+        next_census = now + 10000000u;
+        if (gangstar_gc_census) {
+            uint64_t gc[9];gangstar_gc_census(gc);
+            l_info("RIO_GC_MEMORY frame=%u cycles=%llu elapsed_us=%llu worst_us=%llu released=%llu pending=%llu pending_usable_bytes=%llu peak_enqueued=%llu pending_render_targets=%llu unknown_pending=%llu mode=single_thread retirement_slots=4",
+                frame_number,(unsigned long long)gc[0],(unsigned long long)gc[1],
+                (unsigned long long)gc[2],(unsigned long long)gc[3],(unsigned long long)gc[4],
+                (unsigned long long)gc[5],(unsigned long long)gc[6],(unsigned long long)gc[7],(unsigned long long)gc[8]);
+        }
+    }
+#endif
     if(alpha_discard_calls) { l_info("RIO_ALPHA_OVERWRITE calls=%u avoided_copy_bytes=%llu",alpha_discard_calls,(unsigned long long)alpha_discard_bytes); }
     alpha_discard_calls=0; alpha_discard_bytes=0;
 #ifdef GANGSTAR_UPLOAD_STAGES

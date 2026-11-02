@@ -28,6 +28,7 @@ int init_msg_dialog(const char *msg);
 int get_msg_dialog_result(void);
 
 void fatal_error(const char *fmt, ...) __attribute__((noreturn));
+void save_protection_error(const char *reason) __attribute__((noreturn));
 
 #ifdef __cplusplus
 };

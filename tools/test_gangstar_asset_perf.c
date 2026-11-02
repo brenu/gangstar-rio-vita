@@ -7,6 +7,12 @@ static uint64_t now = 1;
 static int thread = 1, texture_calls;
 static unsigned failure_records,failure_drops,api_records;
 static int slow_upload;
+static unsigned census_calls;
+size_t vglMemFree(vglMemType pool) { (void)pool; return 1234; }
+void gangstar_texture_census(unsigned out[6]) {
+    ++census_calls;
+    for(unsigned i=0;i<6;++i)out[i]=i;
+}
 void _log_print(int type,const char *format,...) {
     (void)type;va_list ap;va_start(ap,format);
     if(strstr(format,"RIO_UPLOAD_CALL frame=")) { ++api_records; }
@@ -89,5 +95,9 @@ int main(void) {
     gangstar_upload_report();assert(api_records==1);
     thread = 1; gangstar_asset_frame(); stats = gangstar_asset_stats();
     assert(!stats.calls[RIO_ASSET_TEXTURE] && !stats.calls[RIO_ASSET_ZLIB]);
-    puts("Asset profiler: GL arguments, zlib output/status, frame reset and background exclusion passed");
+    assert(census_calls==1);
+    now+=10000000;
+    gangstar_upload_report();assert(census_calls==2);
+    gangstar_upload_report();assert(census_calls==2);
+    puts("Asset profiler: GL arguments, zlib output/status, frame reset, census throttling and background exclusion passed");
 }

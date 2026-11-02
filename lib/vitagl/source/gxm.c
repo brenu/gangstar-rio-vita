@@ -114,6 +114,34 @@ int frame_purge_idx = 0; // Index for currently populatable purge list
 int frame_elem_purge_idx = 0; // Index for currently populatable purge list element
 int frame_rt_purge_idx = 0; // Index for currently populatable purge list rendertarget
 static int frame_purge_clean_idx = 1;
+#if defined(VGL_UPLOAD_STAGES) && defined(HAVE_SINGLE_THREADED_GC)
+static uint64_t gc_cycles, gc_elapsed, gc_worst, gc_released, gc_peak;
+static void gc_profile_release(void *p) {
+	++gc_released;
+	vgl_free(p);
+}
+// Called only between frame-thread GL operations. Inspect owned retirement
+// entries without changing their lifetime, waiting for the GPU, or allocating.
+void gangstar_gc_census(uint64_t out[9]) {
+	memset(out,0,9*sizeof(*out));
+	out[0]=gc_cycles;out[1]=gc_elapsed;out[2]=gc_worst;
+	out[3]=gc_released;out[6]=gc_peak;
+	for (unsigned frame=0;frame<FRAME_PURGE_FREQ;++frame) {
+		for (unsigned i=0;i<FRAME_PURGE_LIST_SIZE;++i) {
+			void *p=frame_purge_list[frame][i];
+			if (!p) continue;
+			++out[4];
+			int pool=vgl_mem_get_type_by_addr(p);
+			if (pool>=VGL_MEM_VRAM && pool<=VGL_MEM_EXTERNAL)
+				out[5]+=vgl_malloc_usable_size(p);
+			else ++out[8];
+		}
+		for (unsigned i=0;i<FRAME_PURGE_RENDERTARGETS_LIST_SIZE;++i)
+			if (frame_rt_purge_list[frame][i]) ++out[7];
+	}
+	gc_cycles=gc_elapsed=gc_worst=gc_released=gc_peak=0;
+}
+#endif
 SceUID gc_mutex[2];
 static int gc_thread_priority = 0x10000100;
 static int gc_thread_affinity = 0;
@@ -281,8 +309,15 @@ int garbage_collector(unsigned int args, void *arg) {
 		sceKernelWaitSema(gc_mutex[0], 1, NULL);
 #endif
 		// Purging all elements marked for deletion
+#if defined(VGL_UPLOAD_STAGES) && defined(HAVE_SINGLE_THREADED_GC)
+		uint64_t gc_begin=sceKernelGetProcessTimeWide();
+		if ((uint64_t)frame_elem_purge_idx>gc_peak) gc_peak=frame_elem_purge_idx;
+		vgl_retire_queue_collect(frame_purge_list[frame_purge_clean_idx],
+			FRAME_PURGE_LIST_SIZE, gc_profile_release);
+#else
 		vgl_retire_queue_collect(frame_purge_list[frame_purge_clean_idx],
 			FRAME_PURGE_LIST_SIZE, vgl_free);
+#endif
 		for (int i = 0; i < FRAME_PURGE_RENDERTARGETS_LIST_SIZE; i++) {
 			if (frame_rt_purge_list[frame_purge_clean_idx][i]) {
 				sceGxmDestroyRenderTarget(frame_rt_purge_list[frame_purge_clean_idx][i]);
@@ -293,6 +328,10 @@ int garbage_collector(unsigned int args, void *arg) {
 		frame_purge_idx = (frame_purge_idx + 1) % FRAME_PURGE_FREQ;
 		frame_elem_purge_idx = 0;
 		frame_rt_purge_idx = 0;
+#if defined(VGL_UPLOAD_STAGES) && defined(HAVE_SINGLE_THREADED_GC)
+		uint64_t elapsed=sceKernelGetProcessTimeWide()-gc_begin;
+		++gc_cycles;gc_elapsed+=elapsed;if(elapsed>gc_worst)gc_worst=elapsed;
+#endif
 #ifndef HAVE_SINGLE_THREADED_GC
 		sceKernelSignalSema(gc_mutex[1], 1);
 	}

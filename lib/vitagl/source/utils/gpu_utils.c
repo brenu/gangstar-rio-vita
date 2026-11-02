@@ -27,6 +27,8 @@
 #include "etc1_mip_reserve.h"
 #include "compressed_mip_layout.h"
 #ifdef VGL_UPLOAD_STAGES
+extern void gangstar_texture_alloc_failure(const void *,int,unsigned,unsigned,size_t) __attribute__((weak));
+extern int gangstar_texture_fault_inject(const void *,int,unsigned,unsigned) __attribute__((weak));
 extern void gangstar_upload_layout_error(int,unsigned,unsigned,unsigned,unsigned) __attribute__((weak));
 extern void gangstar_upload_fallback(unsigned,unsigned,unsigned,size_t,size_t,size_t,unsigned,size_t) __attribute__((weak));
 extern uint64_t gangstar_upload_clock(void) __attribute__((weak));
@@ -678,6 +680,27 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 	}
 }
 
+static int gpu_keep_etc_prefix(texture *tex,int level,SceGxmTextureFormat format) {
+#ifdef VGL_ETC1_OOM_FALLBACK
+    // Port compatibility policy: the engine rejects an entire texture on any
+    // GL error. Keep successfully uploaded levels usable after tail OOM.
+    // Never claim missing levels, suppress a base failure, or allow a hole.
+    if (format!=SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR || level<=0 ||
+        tex->status!=TEX_VALID || !tex->data || !tex->mip_count ||
+        level<tex->mip_count || vglGetTexFormat(&tex->gxm_tex)!=format) return 0;
+    tex->compressed_mip_failed=1;
+    vglSetTexMipmapCount(&tex->gxm_tex,tex->use_mips?tex->mip_count:1);
+#ifdef VGL_UPLOAD_STAGES
+    extern void gangstar_texture_prefix_fallback(const void *,int,unsigned) __attribute__((weak));
+    if (gangstar_texture_prefix_fallback)
+        gangstar_texture_prefix_fallback(tex,level,tex->mip_count);
+#endif
+    return 1;
+#else
+    (void)tex;(void)level;(void)format;return 0;
+#endif
+}
+
 void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, SceGxmTextureFormat format, uint32_t image_size, const void *data, texture *tex, uint8_t src_bpp, GLboolean uncompressed) {
     const int profile_etc=(format==SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR);
     uint64_t profile_begin=upload_clock(profile_etc);
@@ -714,10 +737,28 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		aligned_max_height = nearest_po2(max_height);
 	}
 
+#ifdef VGL_ETC1_OOM_FALLBACK
+    // A skipped level must not be followed by a later published level with
+    // an uninitialized gap. A successful new base starts a fresh chain.
+    if (mip_level && profile_etc && !uncompressed &&
+        tex->compressed_mip_failed && mip_level>=tex->mip_count) return;
+#endif
+
 	// Allocating texture data buffer
 	const int mip_offset = gpu_get_compressed_mip_offset(mip_level, aligned_max_width, aligned_max_height, format);
 	const int tex_size = gpu_get_compressed_mipchain_size(mip_level, aligned_max_width, aligned_max_height, format);
 	const int mip_size = tex_size - mip_offset;
+#ifdef VGL_UPLOAD_STAGES
+    // Explicit one-shot diagnostic only. Reproduce a failed mip extension
+    // before allocation or writes, preserving normal GL error behavior.
+    if (profile_etc && gangstar_texture_fault_inject &&
+        gangstar_texture_fault_inject(tex,mip_level,max_width,max_height)) {
+        if (gangstar_texture_alloc_failure)
+            gangstar_texture_alloc_failure(tex,mip_level,w,h,tex_size);
+        if (!uncompressed && gpu_keep_etc_prefix(tex,mip_level,format)) return;
+        SET_GL_ERROR(GL_OUT_OF_MEMORY)
+    }
+#endif
 
 	int mip_count, tex_width, tex_height;
 	void *texture_data;
@@ -770,7 +811,14 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
                 if (!texture_data) {
                     // Reallocation in the same mspace failed, try manually.
                     texture_data=gpu_alloc_mapped_for_gpu(allocation_size);
-                    if (!texture_data) { SET_GL_ERROR(GL_OUT_OF_MEMORY) }
+                    if (!texture_data) {
+#ifdef VGL_UPLOAD_STAGES
+                        if (gangstar_texture_alloc_failure)
+                            gangstar_texture_alloc_failure(tex,mip_level,w,h,allocation_size);
+#endif
+                        if (!uncompressed && gpu_keep_etc_prefix(tex,mip_level,format)) return;
+                        SET_GL_ERROR(GL_OUT_OF_MEMORY)
+                    }
                     const int old_data_size=gpu_get_compressed_mipchain_size(mip_count,aligned_max_width,aligned_max_height,format);
                     vgl_memcpy(texture_data,tex->data,old_data_size);
                     gpu_free_texture_data(tex);
@@ -798,7 +846,13 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 #endif
         if (!texture_data)
             texture_data = gpu_alloc_mapped_for_gpu(tex_size);
-		if (!texture_data) { SET_GL_ERROR(GL_OUT_OF_MEMORY) }
+        if (!texture_data) {
+#ifdef VGL_UPLOAD_STAGES
+            if (gangstar_texture_alloc_failure)
+                gangstar_texture_alloc_failure(tex,mip_level,w,h,tex_size);
+#endif
+            SET_GL_ERROR(GL_OUT_OF_MEMORY)
+        }
 		if (texture_data && tex->status == TEX_VALID)
 			gpu_free_texture_data(tex);
 	}
@@ -882,6 +936,9 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
         profile_begin=upload_clock(profile_etc);
 		// Initializing texture and validating it
 		tex->mip_count = mip_count + 1;
+#ifdef VGL_ETC1_OOM_FALLBACK
+        if (!mip_level) tex->compressed_mip_failed=0;
+#endif
 		vglInitSwizzledTexture(&tex->gxm_tex, texture_data, format, tex_width, tex_height, tex->use_mips ? tex->mip_count : 0);
 		tex->palette_data = NULL;
 		tex->status = TEX_VALID;

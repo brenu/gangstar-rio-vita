@@ -7,6 +7,9 @@
 enum { RIO_ASSET_TEXTURE, RIO_ASSET_ZLIB, RIO_ASSET_SHADER, RIO_ASSET_ETC_FREE, RIO_ASSET_ETC_ALLOC, RIO_ASSET_ETC_SWIZZLE, RIO_ASSET_ETC_SETUP, RIO_ASSET_ETC_RESERVE, RIO_ASSET_ETC_REUSE, RIO_ASSET_ETC_FALLBACK, RIO_ASSET_ETC_MIGRATED, RIO_ASSET_ETC_NO_ROOM, RIO_ASSET_KINDS };
 typedef struct { uint64_t us[RIO_ASSET_KINDS], bytes[RIO_ASSET_KINDS]; unsigned calls[RIO_ASSET_KINDS]; unsigned base_uploads, mip_uploads, mip_generations, max_width, max_height; } GangstarAssetPerf;
 void gangstar_asset_frame(void);
+#ifdef GANGSTAR_UPLOAD_STAGES
+const char *gangstar_texture_fault_scope(const char *);
+#endif
 void gangstar_upload_fallback(unsigned,unsigned,unsigned,size_t,size_t,size_t,unsigned,size_t);
 void gangstar_upload_report(void);
 uint64_t gangstar_upload_clock(void);

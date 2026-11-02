@@ -19,6 +19,7 @@
 #include <psp2/message_dialog.h>
 
 #include <vitaGL.h>
+#include <stdio.h>
 
 static uint16_t ime_title_utf16[SCE_IME_DIALOG_MAX_TITLE_LENGTH];
 static uint16_t ime_initial_text_utf16[SCE_IME_DIALOG_MAX_TEXT_LENGTH];
@@ -140,4 +141,24 @@ void fatal_error(const char *fmt, ...) {
     gangstar_log_finish();
     sceKernelExitProcess(1);
     for (;;) sceKernelDelayThread(1000000);
+}
+
+/* Save failures must remain visible instead of looking like a startup crash.
+ * This path is only used before native game initialization. */
+void save_protection_error(const char *reason) {
+    char message[512];
+    snprintf(message,sizeof(message),"Save protection\n\n%s\n\nYour existing save files have not been reset. Check ux0:/data/gangstarrio/port.log for details.",reason);
+    l_error("Gangstar save protection: %s",reason);
+    gangstar_log_finish();
+    gl_init();
+    if(init_msg_dialog(message)>=0) {
+        while(!get_msg_dialog_result()) {
+            glClearColor(0.0f,0.0f,0.0f,1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            vglSwapBuffers(GL_TRUE);
+            sceKernelDelayThread(16000);
+        }
+    }
+    sceKernelExitProcess(1);
+    for(;;)sceKernelDelayThread(1000000);
 }

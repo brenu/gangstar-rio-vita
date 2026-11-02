@@ -200,6 +200,9 @@ typedef struct texture {
 #endif
 	uint8_t status;
 	uint8_t mip_count;
+#ifdef VGL_ETC1_OOM_FALLBACK
+	uint8_t compressed_mip_failed;
+#endif
 	uint8_t ref_counter;
 	uint8_t faces_counter;
 	GLboolean use_mips;

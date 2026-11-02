@@ -3,6 +3,10 @@ set -euo pipefail
 GANGSTAR_TEST_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$GANGSTAR_TEST_ROOT"
 python3 tools/test_build_profile.py
+mkdir -p work/tests
+cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_texture_fault.c -o work/tests/texture_fault
+work/tests/texture_fault
+python3 tools/test_gangstar_save_identity.py
 python3 tools/test_gangstar_lightmap_bench.py
 python3 tools/test_gangstar_lightmap_pack.py
 python3 tools/test_gangstar_storage_trace.py
@@ -40,6 +44,8 @@ work/tests/gangstar_alpha_overwrite
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_etc_reserve.c -o work/tests/gangstar_etc_reserve
 work/tests/gangstar_etc_reserve
 python3 tools/test_gangstar_etc_initial.py
+python3 tools/test_gangstar_etc_fallback.py
+python3 tools/test_gangstar_gc_census.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_retire_queue.c -o work/tests/gangstar_retire_queue
 work/tests/gangstar_retire_queue
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_compressed_mips.c -o work/tests/gangstar_compressed_mips

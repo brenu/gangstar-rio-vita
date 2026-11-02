@@ -79,6 +79,23 @@ texture *vgl_uncached_tex_tail = NULL;
 
 texture_unit texture_units[COMBINED_TEXTURE_IMAGE_UNITS_NUM]; // Available texture units
 texture texture_slots[TEXTURES_NUM]; // Available texture slots
+#ifdef VGL_UPLOAD_STAGES
+// Read-only frame-thread census: no GPU waits, allocation, or texture changes.
+// Counts are object counts, not estimates of GPU allocation sizes.
+void gangstar_texture_census(unsigned out[6]) {
+	memset(out, 0, 6 * sizeof(*out));
+	for (unsigned i = 0; i < TEXTURES_NUM; ++i) {
+		texture *tex = &texture_slots[i];
+		if (tex->status == TEX_UNUSED) continue;
+		++out[0];
+		if (tex->status != TEX_VALID) { ++out[1]; continue; }
+		++out[2];
+		if (!tex->data) ++out[3];
+		if (tex->use_mips) ++out[4];
+		if (tex->ref_counter) ++out[5];
+	}
+}
+#endif
 sampler *samplers[COMBINED_TEXTURE_IMAGE_UNITS_NUM] = {NULL}; // Sampler objects bindings
 
 void *color_table = NULL; // Current in-use color table
@@ -1757,6 +1774,9 @@ inline __attribute__((always_inline)) void glGenTextures(GLsizei n, GLuint *res)
 			texture_slots[i].faces_counter = 0;
 			texture_slots[i].ref_counter = 0;
 			texture_slots[i].mip_count = 1;
+#ifdef VGL_ETC1_OOM_FALLBACK
+			texture_slots[i].compressed_mip_failed = 0;
+#endif
 #ifdef HAVE_UNPURE_TEXTURES
 			texture_slots[i].mip_start = -1;
 #endif

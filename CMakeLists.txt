@@ -120,6 +120,7 @@ option(GANGSTAR_WORLD_TEXTURE_LOD "Use offline-inventoried static world texture 
 
 option(GANGSTAR_ALPHA_SUBIMAGE_OVERWRITE "Avoid preserving overwritten single-level alpha image bytes" OFF)
 option(GANGSTAR_ETC1_RESERVE_MIPS "Reserve supported ETC1 mip chains on first additional mip upload" OFF)
+option(GANGSTAR_ETC1_OOM_FALLBACK "Keep a valid ETC1 mip prefix when a tail allocation fails" ON)
 set(GANGSTAR_ARCHIVE_CACHE_MIB "16" CACHE STRING "Shared archive data cache size in MiB (16, 32 or 64)")
 if(NOT GANGSTAR_ARCHIVE_CACHE_MIB MATCHES "^(16|32|64)$")
   message(FATAL_ERROR "GANGSTAR_ARCHIVE_CACHE_MIB must be 16, 32 or 64")
@@ -374,6 +375,7 @@ set(SOURCES
     source/gangstar_jni_tables.c
     source/gangstar_perf.c
     source/gangstar_java.c
+    source/gangstar_save_identity.c
     source/gangstar_iap_offline.c
     source/gangstar_jni_strings.c
     source/gangstar_trophies.c
@@ -454,6 +456,9 @@ if (GANGSTAR_ALPHA_SUBIMAGE_OVERWRITE)
 endif()
 if (GANGSTAR_ETC1_RESERVE_MIPS)
   string(APPEND VITAGL_MAKE_FLAGS " ETC1_RESERVE_MIPS=1")
+endif()
+if (GANGSTAR_ETC1_OOM_FALLBACK)
+  string(APPEND VITAGL_MAKE_FLAGS " ETC1_OOM_FALLBACK=1")
 endif()
 if (GANGSTAR_UPLOAD_STAGES)
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GANGSTAR_UPLOAD_STAGES)
