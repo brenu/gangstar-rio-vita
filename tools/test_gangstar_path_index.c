@@ -43,6 +43,15 @@ int main(void) {
     unsigned built=index.entry_builds;
     assert(rio_path_index_prepare(&index,entries,n,0,many,1300,100));
     assert(index.entry_builds==built);
+    // Crash regression: a borrowed directory slot can become null after the
+    // index was prepared, without changing vector address/count or stamp.
+    many[1299]=NULL;
+    assert(rio_path_index_find(&index,"only.tga",0)==INT_MIN);
+    index.folder_ready=0; // The production caller invalidates on unsupported.
+    assert(!rio_path_index_prepare(&index,entries,n,0,many,1300,100));
+    many[1299]="a";
+    assert(rio_path_index_prepare(&index,entries,n,0,many,1300,100));
+    assert(rio_path_index_find(&index,"only.tga",0)==reference(entries,n,"only.tga",0,many,1300));
     many[1299]="b";
     assert(rio_path_index_prepare(&index,entries,n,0,many,1300,101));
     assert(rio_path_index_find(&index,"only.tga",0)==-1);

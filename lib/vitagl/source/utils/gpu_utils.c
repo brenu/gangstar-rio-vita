@@ -29,6 +29,7 @@
 #ifdef VGL_UPLOAD_STAGES
 extern void gangstar_texture_alloc_failure(const void *,int,unsigned,unsigned,size_t) __attribute__((weak));
 extern int gangstar_texture_fault_inject(const void *,int,unsigned,unsigned) __attribute__((weak));
+extern void gangstar_texture_base_uploaded(const void *,const void *,unsigned,unsigned,unsigned) __attribute__((weak));
 extern void gangstar_upload_layout_error(int,unsigned,unsigned,unsigned,unsigned) __attribute__((weak));
 extern void gangstar_upload_fallback(unsigned,unsigned,unsigned,size_t,size_t,size_t,unsigned,size_t) __attribute__((weak));
 extern uint64_t gangstar_upload_clock(void) __attribute__((weak));
@@ -943,6 +944,10 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		tex->palette_data = NULL;
 		tex->status = TEX_VALID;
 		tex->data = texture_data;
+#ifdef VGL_UPLOAD_STAGES
+        if (!mip_level && gangstar_texture_base_uploaded)
+            gangstar_texture_base_uploaded(tex,texture_data,tex_width,tex_height,format);
+#endif
 #ifndef TEXTURES_SPEEDHACK
 		tex->last_frame = OBJ_NOT_USED;
 #endif

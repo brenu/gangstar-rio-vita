@@ -114,6 +114,12 @@ int frame_purge_idx = 0; // Index for currently populatable purge list
 int frame_elem_purge_idx = 0; // Index for currently populatable purge list element
 int frame_rt_purge_idx = 0; // Index for currently populatable purge list rendertarget
 static int frame_purge_clean_idx = 1;
+#ifdef HAVE_SINGLE_THREADED_GC
+// Every enqueue (including NULL after allocation failure) advances the
+// producer index. Seal that exact extent before rotating the existing ring.
+// Worker mode retains its original full scan and ownership behavior.
+static size_t frame_purge_counts[FRAME_PURGE_FREQ];
+#endif
 #if defined(VGL_UPLOAD_STAGES) && defined(HAVE_SINGLE_THREADED_GC)
 static uint64_t gc_cycles, gc_elapsed, gc_worst, gc_released, gc_peak;
 static void gc_profile_release(void *p) {
@@ -309,14 +315,23 @@ int garbage_collector(unsigned int args, void *arg) {
 		sceKernelWaitSema(gc_mutex[0], 1, NULL);
 #endif
 		// Purging all elements marked for deletion
+		size_t purge_count=FRAME_PURGE_LIST_SIZE;
+#ifdef HAVE_SINGLE_THREADED_GC
+		frame_purge_counts[frame_purge_idx]=frame_elem_purge_idx>0?
+			MIN((size_t)frame_elem_purge_idx,(size_t)FRAME_PURGE_LIST_SIZE):0;
+		purge_count=frame_purge_counts[frame_purge_clean_idx];
+#endif
 #if defined(VGL_UPLOAD_STAGES) && defined(HAVE_SINGLE_THREADED_GC)
 		uint64_t gc_begin=sceKernelGetProcessTimeWide();
 		if ((uint64_t)frame_elem_purge_idx>gc_peak) gc_peak=frame_elem_purge_idx;
 		vgl_retire_queue_collect(frame_purge_list[frame_purge_clean_idx],
-			FRAME_PURGE_LIST_SIZE, gc_profile_release);
+			purge_count, gc_profile_release);
 #else
 		vgl_retire_queue_collect(frame_purge_list[frame_purge_clean_idx],
-			FRAME_PURGE_LIST_SIZE, vgl_free);
+			purge_count, vgl_free);
+#endif
+#ifdef HAVE_SINGLE_THREADED_GC
+		frame_purge_counts[frame_purge_clean_idx]=0;
 #endif
 		for (int i = 0; i < FRAME_PURGE_RENDERTARGETS_LIST_SIZE; i++) {
 			if (frame_rt_purge_list[frame_purge_clean_idx][i]) {

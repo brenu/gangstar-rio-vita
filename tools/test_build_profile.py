@@ -28,6 +28,7 @@ required = {
     'GANGSTAR_ARCHIVE_CACHE_MIB': '32', 'GANGSTAR_ARCHIVE_BLOCK_KIB': '32',
     'GANGSTAR_ETC1_RESERVE_MIPS': 'ON', 'GANGSTAR_AUDIO_DIRECT_PATHS': 'ON',
     'GANGSTAR_ETC1_OOM_FALLBACK': 'ON',
+    'GANGSTAR_CAR_TEXTURE_LOD': 'ON',
     'GANGSTAR_ARCHIVE_VIRTUAL_CURSOR': 'ON', 'GANGSTAR_NATIVE_IMA_FAST': 'ON',
     'GANGSTAR_TEXTURE_LOD_EDGE': '512', 'GANGSTAR_AUDIO_POLL_CAP': 'OFF',
     'GANGSTAR_VITAGL_NO_TILE_CLIPPER': 'ON', 'GANGSTAR_HOST_OPT_LEVEL': '3',
@@ -35,7 +36,7 @@ required = {
 required.update({key:'ON' for key in ['GANGSTAR_SELECTIVE_VERTEX_COPY', 'GANGSTAR_VERTEX_CPU_POOLS', 'GANGSTAR_VERTEX_RANGE_COPY', 'GANGSTAR_VITAGL_BUFFERS_SPEEDHACK', 'GANGSTAR_VITAGL_FULL_DRAW_SPEEDHACK', 'GANGSTAR_VITAGL_MATH_SPEEDHACK', 'GANGSTAR_VITAGL_SKIP_ERROR_HANDLING', 'GANGSTAR_VITAGL_STORE_DEPTH_STENCIL']})
 for key, expected in required.items():
     assert actual[key] == expected, (key, actual[key], expected)
-overrides = {'GANGSTAR_ETC1_RESERVE_MIPS': 'OFF', 'GANGSTAR_ARCHIVE_BLOCK_KIB': '64'}
+overrides = {'GANGSTAR_ETC1_RESERVE_MIPS': 'OFF', 'GANGSTAR_ARCHIVE_BLOCK_KIB': '64', 'GANGSTAR_CAR_TEXTURE_LOD': 'OFF'}
 assert all(values(overrides)[k] == v for k, v in overrides.items())
 print(f'Build profile: all {len(options)} options supplied, preferred defaults and explicit overrides passed')
 

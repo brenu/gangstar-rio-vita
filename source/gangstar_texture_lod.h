@@ -60,8 +60,25 @@ static inline int rio_lod_lightmap_family(const char *name) {
     return -1;
 }
 static inline int rio_lod_lightmap_name(const char *name) { return rio_lod_lightmap_family(name) >= 0; }
+static inline int rio_lod_car_name(const char *name) {
+#ifdef GANGSTAR_CAR_TEXTURE_LOD
+    if (!name || strnlen(name,256)==256) return 0;
+    if (!strncmp(name,"./",2)) name+=2;
+    else if (!strncmp(name,"_packetc/",9) || !strncmp(name,"_packEtc/",9)) name+=9;
+    const char *names[]={"car_cops_texture_d.tga","car_cops_texture_d_alpha.tga",
+        "car_cops_texture_damage_d.tga","car_cops_texture_damage_d_alpha.tga",
+        "car_poor_texture_d.tga","car_poor_texture_d_alpha.tga",
+        "car_poor_texture_damage_d.tga","car_poor_texture_damage_d_alpha.tga"};
+    for(unsigned i=0;i<sizeof(names)/sizeof(*names);++i)
+        if(!strcmp(name,names[i]))return 1;
+#else
+    (void)name;
+#endif
+    return 0;
+}
 static inline int rio_lod_name(const char *name) {
     if (!name || strnlen(name, 256) == 256) return 0;
+    if (rio_lod_car_name(name)) return 1;
     if (rio_lod_lightmap_name(name)) return 1;
     const char *base = strrchr(name, '/'); base = base ? base + 1 : name;
 #ifdef GANGSTAR_WORLD_TEXTURE_LOD
@@ -105,14 +122,15 @@ static inline int rio_lod_replace_source(const char *name) {
 }
 // Exact supported Rio DDS/ETC0 2D chain only. Retain existing compressed mips;
 // no decoding, filtering, or recompression. Unknown layouts use original data.
-static inline int rio_lod_plan(const unsigned char *h, size_t size, RioTextureLod *out) {
+static inline int rio_lod_plan_edge(const unsigned char *h, size_t size, RioTextureLod *out,unsigned edge) {
+    if(edge!=512 && edge!=1024)return 0;
     if (size < 128) return 0;
     unsigned source_width=rio_lod_u32(h+16), source_height=rio_lod_u32(h+12);
     unsigned source=source_width>source_height?source_width:source_height;
     unsigned levels=source==2048?12:11;
     int shape=(source_width==source_height && (source==1024 || source==2048)) ||
         (source_width==512 && source_height==1024) || (source_width==1024 && source_height==512);
-    if (!shape || source<=GANGSTAR_TEXTURE_LOD_EDGE) return 0;
+    if (!shape || source<=edge) return 0;
     if (rio_lod_u32(h) != 0x20534444 || rio_lod_u32(h + 4) != 124 ||
         rio_lod_u32(h + 8) != 0x21007 || rio_lod_u32(h + 20) || rio_lod_u32(h + 24) ||
         rio_lod_u32(h + 28) != levels || rio_lod_u32(h + 76) != 32 ||
@@ -125,7 +143,7 @@ static inline int rio_lod_plan(const unsigned char *h, size_t size, RioTextureLo
     for (unsigned level = 0; level < levels; ++level) {
         unsigned level_bytes=((width+3)/4)*((height+3)/4)*8;
         payload+=level_bytes;
-        if (width<=GANGSTAR_TEXTURE_LOD_EDGE && height<=GANGSTAR_TEXTURE_LOD_EDGE) keep+=level_bytes;
+        if (width<=edge && height<=edge) keep+=level_bytes;
         else ++skipped_levels;
         if(width>1) width>>=1;
         if(height>1) height>>=1;
@@ -139,6 +157,18 @@ static inline int rio_lod_plan(const unsigned char *h, size_t size, RioTextureLo
     rio_lod_put(out->header+28,levels-skipped_levels);
     return 1;
 }
+static inline int rio_lod_plan(const unsigned char *h,size_t size,RioTextureLod *out) {
+    return rio_lod_plan_edge(h,size,out,GANGSTAR_TEXTURE_LOD_EDGE);
+}
+static inline int rio_lod_plan_named(const unsigned char *h,size_t size,RioTextureLod *out,const char *name) {
+    if (rio_lod_car_name(name)) {
+        // Only the observed full 2048 chain is changed; do not apply the world
+        // 512 setting or shrink already-small variants of a matching filename.
+        if(size<128 || rio_lod_u32(h+12)!=2048 || rio_lod_u32(h+16)!=2048)return 0;
+        return rio_lod_plan_edge(h,size,out,1024);
+    }
+    return rio_lod_plan(h,size,out);
+}
 // Lightmaps retain every original byte and dimension; only their immutable
 // source payload is eligible for the bounded, reclaimable CPU cache.
 static inline int rio_lod_original_source(const char *name) {
@@ -147,6 +177,7 @@ static inline int rio_lod_original_source(const char *name) {
 // Restore the measured 243-source preload set. Other lightmaps remain eligible
 // for demand caching without forcing all districts into memory at startup.
 static inline int rio_lod_preload_source(const char *name) {
+    if (rio_lod_car_name(name)) return 0;
     if (rio_lod_replace_source(name)) return 1;
     if (!name) return 0;
     const char *base=strrchr(name,'/');base=base?base+1:name;

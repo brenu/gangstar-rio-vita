@@ -21,6 +21,7 @@ with tempfile.TemporaryDirectory(prefix='rio-task-read-') as temp:
 #include <sys/mman.h>
 static int main_thread=1,logs;
 static int gangstar_wait_is_main(void){return main_thread;}
+static void stream_residency_snapshot(uintptr_t p){(void)p;}
 #define l_info(...) (++logs)
 ''' +context+r'''
 typedef uintptr_t (*NativeCall)(uintptr_t,uintptr_t,uintptr_t,uintptr_t);

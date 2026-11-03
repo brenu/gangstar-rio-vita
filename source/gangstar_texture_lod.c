@@ -76,18 +76,20 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     if (!output_size || (original && (archive!=0 || !rio_lod_original_source(name))) ||
         archive < 0 || archive > 1 || !rio_lod_name(name) || (size != 2796344 && size != 699192 && size != 349672) ||
         offset >= lengths[archive] || size > lengths[archive] - offset) return NULL;
+    // These owned startup readers do not populate or trim the fixed source cache.
+    int transient_car=!original && rio_lod_car_name(name);
     pthread_mutex_lock(&source_lock);
-    size_t cache_limit=source_budget(size), cached_size=0;
+    size_t cache_limit=transient_car?0:source_budget(size), cached_size=0;
     RioSourceKey key={archive,original,offset,size};
     if(background && ((background==1 && !source_priority(key)) || rio_source_find(&source_cache,key))) {pthread_mutex_unlock(&source_lock);return NULL;}
-    void *cached=rio_source_clone(&source_cache,key,&cached_size);
+    void *cached=transient_car?NULL:rio_source_clone(&source_cache,key,&cached_size);
     if(cached) {
         ++source_hits;source_hit_bytes+=cached_size;++made;saved+=size-cached_size;
         if(original){++original_hits;original_hit_bytes+=size;}
         if(!background && gangstar_host_heap_allocated)gangstar_host_heap_allocated(cached,cached_size,(uintptr_t)0xfffffff0u);
         *output_size=(uint32_t)cached_size;pthread_mutex_unlock(&source_lock);return cached;
     }
-    if(rio_source_find(&source_cache,key)) {rio_source_trim(&source_cache,0);cache_limit=0;}
+    if(!transient_car && rio_source_find(&source_cache,key)) {rio_source_trim(&source_cache,0);cache_limit=0;}
     ++source_misses;
     // A native miss reads the whole lightmap anyway. Rotate older demand
     // lightmaps within the spare space; never displace the fixed preload.
@@ -107,7 +109,7 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     }
     pthread_mutex_unlock(&source_lock);
     unsigned char header[128]; RioTextureLod plan;
-    if (!read_exact(fds[archive], header, sizeof(header), offset,background) || !rio_lod_plan(header, size, &plan)) {
+    if (!read_exact(fds[archive], header, sizeof(header), offset,background) || !rio_lod_plan_named(header, size, &plan,name)) {
         ++rejected; return NULL;
     }
     if (original) {
@@ -116,7 +118,7 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     }
     if (!plan.output_size || plan.output_size > size) { ++rejected; return NULL; }
     void *data = malloc(plan.output_size);
-    if(!data) {
+    if(!data && !transient_car) {
         pthread_mutex_lock(&source_lock);rio_source_trim(&source_cache,0);pthread_mutex_unlock(&source_lock);
         cache_limit=0;data=malloc(plan.output_size);
     }
@@ -129,6 +131,7 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
             free(data); ++rejected; return NULL;
         }
     }
+    if (!transient_car) {
     pthread_mutex_lock(&source_lock);
     cache_limit=source_budget(0);
     unsigned priority=source_priority(key);
@@ -141,6 +144,7 @@ static const void *texture_source_get(int archive, uint64_t offset, uint32_t siz
     RioSourceEntry *retained=rio_source_find(&source_cache,key);
     if(retained){retained->priority=priority;retained->fixed=rio_lod_preload_source(name);}
     pthread_mutex_unlock(&source_lock);
+    }
     // Native destruction calls the imported free, which removes this entry.
     if (!background && gangstar_host_heap_allocated)
         gangstar_host_heap_allocated(data,plan.output_size,(uintptr_t)0xfffffff0u);

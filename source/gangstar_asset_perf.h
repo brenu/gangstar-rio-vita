@@ -9,6 +9,7 @@ typedef struct { uint64_t us[RIO_ASSET_KINDS], bytes[RIO_ASSET_KINDS]; unsigned 
 void gangstar_asset_frame(void);
 #ifdef GANGSTAR_UPLOAD_STAGES
 const char *gangstar_texture_fault_scope(const char *);
+const char *gangstar_texture_upload_scope(const char *);
 #endif
 void gangstar_upload_fallback(unsigned,unsigned,unsigned,size_t,size_t,size_t,unsigned,size_t);
 void gangstar_upload_report(void);

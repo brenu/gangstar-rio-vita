@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile,subprocess,struct,re
 elf=Path('../work/libgl2jni.so').read_bytes()
 assert struct.unpack_from('<II',elf,0x4770d4)==(0xe1a02000,0xe92d41f0)
-s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static uintptr_t stream_queued_highres(');b=s.index('// Only the verified',a);wrapper=s[a:b]
+s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static uintptr_t stream_queued_highres(');b=s.index('static uintptr_t texture_upload_context(',a);wrapper=s[a:b]
 with tempfile.TemporaryDirectory(prefix='rio-queued-') as temp:
  d=Path(temp);headers=d/'psp2/kernel';headers.mkdir(parents=True)
  (headers/'threadmgr.h').write_text('int sceKernelChangeThreadPriority(int,int);\n')

@@ -95,6 +95,59 @@ void gangstar_texture_census(unsigned out[6]) {
 		if (tex->ref_counter) ++out[5];
 	}
 }
+// Attribution only: borrowed data and unknown pools are never dereferenced.
+// Deduplicate backing pointers so aliases do not inflate allocation totals.
+extern void gangstar_texture_live_entry(unsigned,const void *,const void *,size_t,unsigned,unsigned,unsigned,unsigned,int,unsigned,unsigned) __attribute__((weak));
+void gangstar_texture_alloc_census(uint64_t out[12],uint64_t pools[5]) {
+	extern void gangstar_texture_large_entry(unsigned,const void *,const void *,size_t,unsigned,unsigned,unsigned,unsigned,int,unsigned,unsigned) __attribute__((weak));
+	static const void *seen[2048];
+	struct Entry {unsigned slot,w,h,format,mips,age,flags;int pool;const void *data;size_t bytes;} top[8]={0};
+	memset(out,0,12*sizeof(*out));memset(pools,0,5*sizeof(*pools));memset(seen,0,sizeof(seen));
+	for (unsigned i=0;i<TEXTURES_NUM;++i) {
+		texture *tex=&texture_slots[i];
+		if (tex->status!=TEX_VALID || !tex->data) continue;
+		if (tex->overridden) {++out[8];continue;}
+		++out[0];
+		int pool=vgl_mem_get_type_by_addr(tex->data);
+		if (pool<VGL_MEM_VRAM || pool>VGL_MEM_EXTERNAL) {++out[9];continue;}
+		unsigned hash=((uintptr_t)tex->data>>4)&2047u,probes=0;
+		while (probes<2048 && seen[hash] && seen[hash]!=tex->data) {hash=(hash+1)&2047u;++probes;}
+		if (probes==2048) {++out[10];continue;}
+		if (seen[hash]) {++out[11];continue;}
+		seen[hash]=tex->data;
+		size_t bytes=vgl_malloc_usable_size(tex->data);
+		unsigned w,h;vglGetTexSizes(&tex->gxm_tex,&w,&h);
+		unsigned format=vglGetTexFormat(&tex->gxm_tex);
+		++out[1];out[2]+=bytes;pools[pool]+=bytes;
+		if (format==SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR) {
+			out[3]+=bytes;
+			if (w>=2048 && h>=2048) {++out[4];out[5]+=bytes;}
+		} else out[6]+=bytes;
+		if (tex->dirty) ++out[7];
+		unsigned age=0xffffffffu,flags=(tex->dirty?2u:0u)|(tex->ref_counter?4u:0u);
+#ifndef TEXTURES_SPEEDHACK
+		if (tex->last_frame==OBJ_NOT_USED) flags|=1u;
+		else if (tex->last_frame!=OBJ_CACHED) age=vgl_framecount-tex->last_frame;
+#else
+		flags|=32u;
+#endif
+#ifdef VGL_ETC1_OOM_FALLBACK
+		if (tex->compressed_mip_failed) flags|=16u;
+#endif
+		// Include every full-size ETC backing, even when the top-eight list is
+		// crowded by HUD atlases. The callback copies/logs values only.
+		if (w>=2048 && h>=2048 && format==SCE_GXM_TEXTURE_FORMAT_ETC1_1BGR && gangstar_texture_large_entry)
+			gangstar_texture_large_entry(i,tex,tex->data,bytes,w,h,format,tex->mip_count,pool,age,flags);
+		for (unsigned rank=0;rank<8;++rank) if (bytes>top[rank].bytes) {
+			for (unsigned j=7;j>rank;--j) top[j]=top[j-1];
+			top[rank]=(struct Entry){i,w,h,format,tex->mip_count,age,flags,pool,tex->data,bytes};break;
+		}
+	}
+	if (gangstar_texture_live_entry) for (unsigned i=0;i<8 && top[i].bytes;++i) {
+		struct Entry *e=&top[i];
+		gangstar_texture_live_entry(e->slot,&texture_slots[e->slot],e->data,e->bytes,e->w,e->h,e->format,e->mips,e->pool,e->age,e->flags);
+	}
+}
 #endif
 sampler *samplers[COMBINED_TEXTURE_IMAGE_UNITS_NUM] = {NULL}; // Sampler objects bindings
 

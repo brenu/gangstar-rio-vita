@@ -171,6 +171,7 @@ static struct Probe {
     ,{"_ZN14CStreamTexture18loadHighResMipmapsEb","Stream_queued_highres",{0xe1a02000,0xe92d41f0},NULL,0,0}
     ,{"_ZN6glitch4task12CTaskManager12dispatchTaskEPNS0_12ITaskHandlerEb","Material_dispatch",{0xe92d47f0,0xe5d0301c},NULL,0,0}
     ,{"_ZN6glitch4task8CCpuTask3runEv","Task_read_context",{0xe92d4010,0xe5903030},NULL,0,0}
+    ,{"_ZNK6glitch5video15CCommonGLDriverINS0_21CProgrammableGLDriverINS0_30CProgrammableShaderHandlerBaseINS0_18CGLSLShaderHandlerEEEEENS0_6detail33CProgrammableGLFunctionPointerSetEE8CTexture10updateDataEb","Texture_upload_identity",{0xe92d4ff0,0xe1a06000},NULL,0,0}
 
 };
 #ifdef GANGSTAR_STORAGE_TRACE
@@ -201,11 +202,13 @@ static void task_read_trace(unsigned probe,const char *name,uint64_t elapsed) {
 // explicit five-argument wrapper; probe 38 has seven arguments.
 // A permanent trampoline keeps the original callable even on other threads;
 // never temporarily restore the function's entry instructions around a call.
+static void stream_residency_snapshot(uintptr_t manager);
 #define PROBE(N) \
 static __attribute__((noinline)) uintptr_t probe_##N(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { \
     uint64_t audio_began = (N>=9 && N<=12 && rio_audio_scope_active()) ? rio_diagnostic_clock() : 0; \
     uint64_t began = gangstar_wait_begin(); \
     uintptr_t result = probes[N].original(a, b, c, d); \
+    if (N==18) stream_residency_snapshot(a); \
     uint64_t elapsed = gangstar_wait_end(RIO_WAIT_NATIVE, began, (uintptr_t)__builtin_return_address(0), \
         a, 0, (int)result, probes[N].label); \
     task_read_trace(N,(const char *)c,elapsed); \
@@ -348,7 +351,16 @@ static int direct_path_open(uintptr_t out, uintptr_t parent, const char *query, 
             if(main_index)++path_fallback; return 0;
         }
         int found=rio_path_index_find(index,query,*(unsigned char *)(reader+0x2d));
-        if (found==INT_MIN) { if(main_index)++path_fallback; return 0; }
+        if (found==INT_MIN) {
+            // Rebuild borrowed folder metadata on the next eligible open.
+            // This result is unsupported, not evidence that an asset is absent.
+            index->folder_ready=0;
+            static atomic_uint rebuild_reports;
+            if(atomic_fetch_add(&rebuild_reports,1)<16)
+                l_warn("RIO_PATH_REBUILD folders=%u generation=%u query=%.192s",
+                    (unsigned)index->folder_count,generation,query);
+            if(main_index)++path_fallback; return 0;
+        }
         if (found>=0) {
             // Keep native file construction, ownership, source mip reduction
             // and archive seek locking. Only filename resolution is replaced.
@@ -482,13 +494,21 @@ static uintptr_t direct_file_vtable;
 static uintptr_t (*make_memory_file)(uintptr_t, const void *, uint32_t, const char *, int);
 static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 #if defined(GANGSTAR_ASSET_PREFETCH) || defined(GANGSTAR_SMALL_LIGHTMAPS)
-    if (direct_file_vtable && gangstar_wait_is_main()) {
+    int main = gangstar_wait_is_main();
+#ifndef GANGSTAR_CAR_TEXTURE_LOD
+    if (!main) return probes[20].original(a,b,c,d);
+#endif
+    if (direct_file_vtable) {
         uintptr_t first = *(uintptr_t *)(b + 0x20), last = *(uintptr_t *)(b + 0x24);
         uintptr_t file = *(uintptr_t *)(b + 8);
         if (file && *(uintptr_t *)file == direct_file_vtable && first && last >= first &&
             !((last - first) & 15) && c < (last - first) / 16) {
             const RioPakEntry *entry = (const RioPakEntry *)(first + c * 16);
             const char *name = entry->name;
+            // Image-loader tasks also open these immutable entries. Only the
+            // exact car allowlist may use owned reduced readers off-thread;
+            // world caches and prefetch admission remain on the frame thread.
+            if (!main && !rio_lod_car_name(name)) return probes[20].original(a,b,c,d);
             size_t n = name ? strnlen(name, 256) : 0;
             if (!(entry->extra & 0x10000) && n >= 4 && n < 256 &&
                 (!strcmp(name + n - 4, ".tga") || !strcmp(name + n - 4, ".pvr") || !strcmp(name + n - 4, ".dds"))) {
@@ -509,12 +529,17 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
                                 // Hidden C++ return pointer in a; transfer ownership
                                 // so the native file frees this buffer when released.
                                 uintptr_t result = make_memory_file(a, small, length, name, 1);
-                                if (*(uintptr_t *)a) return result;
+                                if (*(uintptr_t *)a) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+                                    if(rio_lod_car_name(name))l_info("RIO_CAR_READER worker=%u bytes=%u name=%s",!main,length,name);
+#endif
+                                    return result;
+                                }
                                 free((void *)small);
                             }
                         }
 #endif
-                        gangstar_archive_prefetch_asset(archive, entry->offset, entry->size);
+                        if(main)gangstar_archive_prefetch_asset(archive, entry->offset, entry->size);
                     }
                 }
             }
@@ -526,6 +551,80 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 // Bounded, main-thread-only history. Exact names avoid hash collisions;
 // object addresses are observations, not proof of native object lifetimes.
 static unsigned reuse_frame, reuse_count, reuse_dropped;
+static void (*stream_census_lock)(void *),(*stream_census_unlock)(void *);
+static uintptr_t (*texture_census_manager)(void);
+static void texture_manager_residency_snapshot(void) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+    if(!texture_census_manager || !stream_census_lock || !stream_census_unlock)return;
+    uintptr_t manager=texture_census_manager();if(!manager)return;
+    struct Row {uintptr_t object;unsigned refs,gl,flags,cpu,marked;char name[128];} rows[48];
+    unsigned count=0,omitted=0;
+    stream_census_lock((void *)(manager+0xd0));
+    uintptr_t first=*(uintptr_t *)(manager+0x18),last=*(uintptr_t *)(manager+0x1c);
+    uintptr_t marked=*(uintptr_t *)(manager+0xbc),marked_end=*(uintptr_t *)(manager+0xc0);
+    int marked_valid=marked_end>=marked && (marked_end-marked)%sizeof(uintptr_t)==0 &&
+        (marked_end-marked)/sizeof(uintptr_t)<=65536 && (marked || marked_end==marked);
+    if(first && last>=first && (last-first)%8==0 && (last-first)/8<=65536)
+    for(uintptr_t at=first;at<last;at+=8) {
+        uintptr_t object=*(uintptr_t *)at;if(!object)continue;
+        const char *name=*(const char **)(object+8);size_t length=name?strnlen(name,128):128;
+        if(length==128 || !strstr(name,"_lightmap"))continue;
+        if(count==48){++omitted;continue;}
+        struct Row *r=&rows[count++];memset(r,0,sizeof(*r));r->object=object;
+        r->refs=*(const unsigned *)(object+4);r->flags=*(const unsigned char *)(object+0x38);
+        r->gl=*(const unsigned *)(object+0x60);r->cpu=*(uintptr_t *)(object+0x24)!=0;
+        r->marked=marked_valid?0:2;
+        if(marked_valid)for(uintptr_t p=marked;p<marked_end;p+=sizeof(uintptr_t))
+            if(*(uintptr_t *)p==object){r->marked=1;break;}
+        memcpy(r->name,name,length+1);
+    }
+    stream_census_unlock((void *)(manager+0xd0));
+    for(unsigned i=0;i<count;++i) {
+        struct Row *r=&rows[i];
+        l_info("RIO_TEXTURE_REFS frame=%u native=%p refs=%u gl_name=%u flags=%u cpu_data=%u marked=%u name=%s",
+            reuse_frame,(void *)r->object,r->refs,r->gl,r->flags,r->cpu,r->marked,r->name);
+    }
+    if(omitted)l_info("RIO_TEXTURE_REFS frame=%u omitted=%u",reuse_frame,omitted);
+#endif
+}
+static void stream_residency_snapshot(uintptr_t manager) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+    static unsigned calls;
+    if(!gangstar_wait_is_main() || !manager || !stream_census_lock || !stream_census_unlock || ++calls%300) return;
+    struct Row {uintptr_t object,high;unsigned uses,refs,gl;int state;char name[128];} rows[32];
+    unsigned count=0,omitted=0;
+    stream_census_lock((void *)(manager+12));
+    uintptr_t first=*(uintptr_t *)(manager+0xc4),last=*(uintptr_t *)(manager+0xc8);
+    if(first && last>=first && (last-first)%sizeof(uintptr_t)==0 && (last-first)/sizeof(uintptr_t)<=4096)
+    for(uintptr_t at=first;at<last;at+=sizeof(uintptr_t)) {
+        uintptr_t object=*(uintptr_t *)at;if(!object)continue;
+        stream_census_lock((void *)(object+0x48));
+        const char *name=*(const char **)(object+0x78);
+        size_t length=name?strnlen(name,128):128;
+        if(length<128 && strstr(name,"_lightmap")) {
+            if(count<32) {
+                struct Row *r=&rows[count++];memset(r,0,sizeof(*r));
+                r->object=object;r->uses=*(const unsigned short *)(object+0x80);
+                r->state=*(const int *)(object+0x84);r->high=*(uintptr_t *)(object+0x9c);
+                if(r->high){r->refs=*(const unsigned *)(r->high+4);r->gl=*(const unsigned *)(r->high+0x60);}
+                memcpy(r->name,name,length+1);
+            } else ++omitted;
+        }
+        stream_census_unlock((void *)(object+0x48));
+    }
+    stream_census_unlock((void *)(manager+12));
+    // Emit only copied values after releasing native locks.
+    for(unsigned i=0;i<count;++i) {
+        struct Row *r=&rows[i];
+        l_info("RIO_STREAM_RESIDENCY frame=%u stream=%p uses=%u state=%d high=%p high_refs=%u gl_name=%u name=%s",
+            reuse_frame,(void *)r->object,r->uses,r->state,(void *)r->high,r->refs,r->gl,r->name);
+    }
+    if(omitted)l_info("RIO_STREAM_RESIDENCY frame=%u omitted=%u",reuse_frame,omitted);
+    texture_manager_residency_snapshot();
+#else
+    (void)manager;
+#endif
+}
 static struct { char name[192]; unsigned size, seen; } reuse_history[512];
 static struct { char name[192]; unsigned frame, occurrence, size, calls;
     uintptr_t texture; uint64_t us, upload_us, read_us, read_bytes;
@@ -1232,6 +1331,13 @@ static uintptr_t sequential_id_call(NativeCall original,uintptr_t a,uintptr_t b,
  return result;
 }
 static int native_probe_needed(unsigned i) {
+ if(i==PHASE_BASE+60) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+  return 1;
+#else
+  return 0;
+#endif
+ }
  if(i==PHASE_BASE+59) {
 #ifdef GANGSTAR_STORAGE_TRACE
   return 1;
@@ -1414,6 +1520,31 @@ static uintptr_t stream_queued_highres(uintptr_t texture,uintptr_t alpha,uintptr
 #endif
  return probes[PHASE_BASE+57].original(texture,alpha,c,d);
 }
+static uintptr_t texture_upload_context(uintptr_t texture,uintptr_t flag,uintptr_t c,uintptr_t d) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+ uintptr_t upload_caller=(uintptr_t)__builtin_return_address(0);
+ if(texture && gangstar_wait_is_main()) {
+  // ITexture constructs its native string at +8 (ELF 75d7dc) and disposes
+  // that same string at +8 (ELF 75da0c). Borrow across this const call only.
+  const char *name;memcpy(&name,(const void *)(texture+8),sizeof(name));
+  if(name && strnlen(name,192)==192)name=NULL;
+  const char *previous=gangstar_texture_upload_scope(name);
+  uintptr_t result=probes[PHASE_BASE+60].original(texture,flag,c,d);
+  unsigned width,height,gl_name,refs;
+  memcpy(&width,(const void *)(texture+0x18),4);memcpy(&height,(const void *)(texture+0x1c),4);
+  memcpy(&gl_name,(const void *)(texture+0x60),4);memcpy(&refs,(const void *)(texture+4),4);
+  static unsigned reports;
+  if(width>=1024 && height>=1024 && reports<512) {
+   ++reports;
+   l_info("RIO_TEXTURE_OWNER frame=%u native=%p gl_name=%u width=%u height=%u refs=%u flags=%u caller=%p name=%s",
+    reuse_frame,(void *)texture,gl_name,width,height,refs,*(const unsigned char *)(texture+0x38),
+    (void *)(upload_caller-so_mod.text_base),name?name:"(unnamed)");
+  }
+  gangstar_texture_upload_scope(previous);return result;
+ }
+#endif
+ return probes[PHASE_BASE+60].original(texture,flag,c,d);
+}
 // Only the verified CStreamTexture constructor call sites may defer DDS data.
 // Each native mapped reader keeps its original size/header and its own buffer.
 // Pixel bytes are materialized immediately before native getTextureFromStream.
@@ -1458,6 +1589,41 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
  uintptr_t key,uintptr_t filename,uintptr_t level,uintptr_t flag) {
  typedef uintptr_t (*StreamCall)(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t);
  StreamCall original=(StreamCall)probes[PHASE_BASE+56].original;
+#ifdef GANGSTAR_CAR_TEXTURE_LOD
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+ if(gangstar_wait_is_main() && texture && mapped && filename) {
+  const char *name;memcpy(&name,(const void *)filename,sizeof(name));
+  static unsigned checks;
+  if(rio_lod_car_name(name) && checks<48) {
+   ++checks;
+   const unsigned char *data=(const unsigned char *)*(uintptr_t *)mapped;
+   size_t size=((uintptr_t *)mapped)[1];RioTextureLod plan;
+   int valid=data && rio_lod_plan_named(data,size,&plan,name);
+   l_info("RIO_CAR_STREAM_CHECK frame=%u level=%u max_level=%u width=%u height=%u bytes=%u magic=%08x plan=%u name=%s",
+    reuse_frame,(unsigned)level,*(unsigned *)(texture+0x88),*(unsigned *)(texture+0xbc),
+    *(unsigned *)(texture+0xc0),(unsigned)size,data && size>=4?rio_lod_u32(data):0,valid,name);
+  }
+ }
+#endif
+ if(gangstar_wait_is_main() && texture && mapped && filename && level==0 && partial_mip_bytes &&
+    *(int *)(texture+0x88)==11 && *(unsigned *)(texture+0xbc)==2048 && *(unsigned *)(texture+0xc0)==2048) {
+  // The streamed reader bypasses Pak_OpenIndex. Use its native mip argument,
+  // not a rewritten CStreamTexture header or temporary object mutation.
+  const char *name;memcpy(&name,(const void *)filename,sizeof(name));
+  const unsigned char *data=(const unsigned char *)*(uintptr_t *)mapped;
+  size_t size=((uintptr_t *)mapped)[1];RioTextureLod plan;
+  if(rio_lod_car_name(name) && data && size==2796344u &&
+     rio_lod_plan_named(data,size,&plan,name) && plan.skip==2097152u && plan.output_size==699192u) {
+   unsigned format=*(unsigned *)(texture+0xc4);
+   if(partial_mip_bytes(format,2048,2048,0,0)==2097152u &&
+      partial_mip_bytes(format,2048,2048,1,0)==524288u) {
+    level=1;
+    static unsigned reports;
+    if(reports++<64)l_info("RIO_CAR_STREAM_LEVEL frame=%u requested=0 selected=1 name=%s",reuse_frame,name);
+   }
+  }
+ }
+#endif
  if(gangstar_wait_is_main())for(unsigned i=0;i<16;++i) {
   RioPartialMap *slot=&partial_maps[i];
   if(!slot->mapped || slot->mapped!=mapped || *(uintptr_t *)mapped!=(uintptr_t)slot->data)continue;
@@ -1501,6 +1667,7 @@ static NativeCall wrappers[] = {probe_0, probe_1, probe_2, probe_3, probe_4, pro
     ,probe_47,probe_48,probe_49
 #endif
     ,phase_0,phase_1,phase_2,phase_3,phase_4,phase_5,phase_6,phase_7,phase_8,phase_9,phase_10,phase_11,phase_12,phase_13,phase_14,phase_15,phase_16,phase_17,phase_18,phase_19,phase_20,phase_21,phase_22,phase_23,phase_24,phase_25,phase_26,phase_27,phase_28,phase_29,phase_30,phase_31,phase_32,phase_33,phase_34,phase_35,phase_36,phase_37,phase_38,phase_39,phase_40,phase_41,phase_42,phase_43,phase_44,phase_45,phase_46,phase_47,phase_48,phase_49,phase_50,phase_51,phase_52,phase_53,phase_54,stream_partial_map,(NativeCall)stream_partial_mips,stream_queued_highres,material_dispatch,task_read_run
+    ,texture_upload_context
 };
 _Static_assert(sizeof(wrappers)/sizeof(*wrappers)==sizeof(probes)/sizeof(*probes), "Native probe wrapper count");
 #endif
@@ -1829,6 +1996,11 @@ static void install_weapon_guard(void) {
     l_info("Gangstar weapon guard: empty current weapon handled");
 }
 void gangstar_native_startup_install(void) {
+#if defined(GANGSTAR_UPLOAD_STAGES) && !defined(GANGSTAR_RELEASE_BUILD)
+    stream_census_lock=(void *)so_symbol(&so_mod,"_ZN3glf5Mutex4LockEv");
+    stream_census_unlock=(void *)so_symbol(&so_mod,"_ZN3glf5Mutex6UnlockEv");
+    texture_census_manager=(void *)so_symbol(&so_mod,"_Z17GetTextureManagerv");
+#endif
 #ifdef GANGSTAR_SELECTIVE_VERTEX_COPY
     gangstar_vertex_scratch_install();
 #endif

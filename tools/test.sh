@@ -12,6 +12,8 @@ python3 tools/test_gangstar_lightmap_pack.py
 python3 tools/test_gangstar_storage_trace.py
 python3 tools/test_gangstar_memory_log.py
 python3 tools/test_gangstar_stream_prefetch.py
+python3 tools/test_gangstar_stream_residency.py
+python3 tools/test_gangstar_texture_refs.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_material_dispatch.c -o work/tests/material_dispatch
 python3 tools/test_gangstar_material_dispatch.py
 python3 tools/test_gangstar_task_read.py
@@ -46,6 +48,15 @@ work/tests/gangstar_etc_reserve
 python3 tools/test_gangstar_etc_initial.py
 python3 tools/test_gangstar_etc_fallback.py
 python3 tools/test_gangstar_gc_census.py
+python3 tools/test_gangstar_gc_extent.py
+python3 tools/test_gangstar_texture_alloc_census.py
+python3 tools/test_gangstar_texture_upload_context.py
+python3 tools/test_gangstar_car_stream.py
+python3 tools/test_gangstar_car_reader.py
+for car_flags in '' '-DGANGSTAR_CAR_TEXTURE_LOD'; do
+cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_TEXTURE_LOD_EDGE=512 $car_flags -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source -pthread tools/test_gangstar_car_texture_lod.c -o work/tests/car_texture_lod
+work/tests/car_texture_lod
+done
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_retire_queue.c -o work/tests/gangstar_retire_queue
 work/tests/gangstar_retire_queue
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_compressed_mips.c -o work/tests/gangstar_compressed_mips

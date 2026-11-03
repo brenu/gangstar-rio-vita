@@ -5,6 +5,7 @@
 // Metadata only. Never share a native file or its seek position. Caller holds
 // the native filesystem lock while inspecting indexes and search directories.
 enum { RIO_PATH_BUCKETS = 4096, RIO_FOLDER_BUCKETS = 1024 };
+#define RIO_PATH_INVALID_RANK (UINT_MAX-1u)
 typedef struct {
     const RioPakEntry *entries; size_t count;
     uint32_t *next, *folder_next; size_t folder_capacity;
@@ -66,8 +67,14 @@ static inline int rio_path_index_prepare(RioPathIndex *p, const RioPakEntry *ent
 static inline unsigned rio_path_folder_rank(const RioPathIndex *p,const char *prefix,size_t length) {
     unsigned rank=UINT_MAX;
     unsigned b=rio_path_hash(prefix,length,0)%RIO_FOLDER_BUCKETS;
+    size_t visited=0;
     for (uint32_t node=p->folder_heads[b];node;node=p->folder_next[node-1]) {
+        // Native search-directory storage is borrowed. A partially changed
+        // list must abort the optimized search, never become a cached miss.
+        if (!p->folders || !p->folder_next || node>p->folder_count ||
+            node>p->folder_capacity || ++visited>p->folder_count) return RIO_PATH_INVALID_RANK;
         const char *folder=p->folders[node-1];
+        if (!folder) return RIO_PATH_INVALID_RANK;
         size_t i=0;
         while (i<length && folder[i] && rio_path_fold((unsigned char)folder[i],p->fold)==(unsigned char)prefix[i]) ++i;
         if (i==length && !folder[i] && node-1<rank) rank=node-1;
@@ -91,6 +98,7 @@ static inline int rio_path_index_find(const RioPathIndex *p,const char *query,in
         unsigned i=node-1; const char *name=p->entries[i].name; size_t length=strlen(name);
         if (length<=n || name[length-n-1]!='/' || strcmp(name+length-n,key)) continue;
         unsigned rank=rio_path_folder_rank(p,name,length-n-1);
+        if (rank==RIO_PATH_INVALID_RANK) return INT_MIN;
         if (rank<best_rank || (rank==best_rank && rank!=UINT_MAX && (best<0 || i<(unsigned)best))) {
             best_rank=rank; best=(int)i;
         }
