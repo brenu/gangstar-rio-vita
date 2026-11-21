@@ -58,6 +58,9 @@ static int gangstar_main(void) {
     gangstar_archive_init();
 #ifdef GANGSTAR_LOOSE_PATH_INDEX
     l_info("RIO_LOOSE_INDEX startup_absent=%u",rio_loose_index_init(DATA_PATH));
+    int overrides_error=0;
+    unsigned overrides=rio_loose_index_init_overrides("../Documents/",&overrides_error);
+    l_info("RIO_LOOSE_INDEX overrides_absent=%u opendir_errno=%d",overrides,overrides_error);
 #endif
     if (gangstar_sync_selftest()) fatal_error("Vita synchronization self-test failed");
     gangstar_java_install();
