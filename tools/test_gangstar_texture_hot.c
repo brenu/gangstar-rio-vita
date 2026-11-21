@@ -91,6 +91,16 @@ static void reader(void) {
     free(one); free(two);                                             // engine frees its copies
     assert(!gangstar_texture_hot_get(0, at, 2872));                   // ineligible size
     assert(!gangstar_texture_hot_get(2, at, size));                   // unknown archive
+    // Loading-screen preload admits on the first open.
+    void gangstar_texture_hot_preloading(int on);
+    gangstar_texture_hot_preloading(1);
+    int before_preload = reads;
+    unsigned char *pre = gangstar_texture_hot_get(0, 2000003, size);
+    gangstar_texture_hot_preloading(0);
+    assert(pre && reads > before_preload && !memcmp(pre, archive_bytes + 2000003, size)); free(pre);
+    before_preload = reads;
+    pre = gangstar_texture_hot_get(0, 2000003, size);
+    assert(pre && reads == before_preload); free(pre);              // first gameplay open: RAM
     // I/O failure falls back to the native path.
     assert(!gangstar_texture_hot_get(0, 900000, size)); fail_reads = 1;
     assert(!gangstar_texture_hot_get(0, 900000, size)); fail_reads = 0;

@@ -6,7 +6,7 @@
  * 512x512 "reflect", tile and blend atlases every few hundred frames. They
  * are not reduced-LOD sources, so each reopen read ~171 KiB from the memory
  * card on the frame thread (20-70 ms). An entry is admitted on its second
- * open, kept byte-for-byte, and served to the engine as an owned in-memory
+ * open (or during the loading-screen preload), kept byte-for-byte, and served to the engine as an owned in-memory
  * file, exactly like the existing reduced-texture path.
  *
  * Bounded by RIO_HOT_LIMIT, least-recently-used eviction, and a heap
@@ -16,8 +16,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#define RIO_HOT_LIMIT (12u * 1024u * 1024u)
-#define RIO_HOT_SLOTS 96u
+#define RIO_HOT_LIMIT (32u * 1024u * 1024u)   // ~191 atlases; generated preload set is capped at 28 MiB
+#define RIO_HOT_SLOTS 192u
 #define RIO_HOT_SEEN 512u
 #define RIO_HOT_MIN_BYTES (64u * 1024u)
 #define RIO_HOT_MAX_BYTES (512u * 1024u)

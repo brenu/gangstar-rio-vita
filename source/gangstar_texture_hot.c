@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 static RioHotCache hot;
+static int hot_preloading;   // loading screen: admit on first open
+void gangstar_texture_hot_preloading(int on) { hot_preloading = on; }
 static int hot_fds[2] = {-1, -1};
 static const char *const hot_paths[2] = {
     "ux0:/data/gangstarrio/main.12030.com.gameloft.android.ANMP.GloftG4HM.obb",
@@ -68,7 +70,7 @@ void *gangstar_texture_hot_get(int archive, uint64_t offset, uint32_t size) {
         memcpy(copy, entry->data, size); ++hot.hits;
         return copy;
     }
-    if (!rio_hot_note_open(&hot, key)) return NULL;     // first open: native path
+    if (!rio_hot_note_open(&hot, key) && !hot_preloading) return NULL;   // first open: native path
     if (used > RIO_HOT_HEAP_WATERMARK - size) { ++hot.refused; return NULL; }
     void *data = read_entry(archive, offset, size);
     if (!data) return NULL;

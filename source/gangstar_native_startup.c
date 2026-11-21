@@ -27,6 +27,8 @@
 #ifdef GANGSTAR_TEXTURE_HOT_CACHE
 void *gangstar_texture_hot_get(int archive, uint64_t offset, uint32_t size);
 void gangstar_texture_hot_report(void);
+void gangstar_texture_hot_preloading(int on);
+#include "gangstar_texture_hot_preload.h"
 #endif
 #include "gangstar_district_manifest.h"
 #include "gangstar_district_preload.h"
@@ -1011,6 +1013,29 @@ static void preload_world_sources(uintptr_t manager) {
     }
     l_info("RIO_SOURCE_SUPPLEMENTAL attempted=%u opened=%u spare_only=1",
         (unsigned)(sizeof(rio_lod_supplemental_sources)/sizeof(*rio_lod_supplemental_sources)),supplemental_opened);
+#if defined(GANGSTAR_TEXTURE_HOT_CACHE) && defined(GANGSTAR_TEXTURE_HOT_PRELOAD)
+    // Plain district atlases go to the reload cache now, on the loading
+    // screen, instead of a card read on the frame thread while driving.
+    // Opening through the engine filesystem reaches the pak-entry hook,
+    // which admits each one; the native file and its copy are released here.
+    static int hot_preloaded;
+    if(!hot_preloaded) {
+        hot_preloaded=1;
+        uint64_t hot_began=rio_diagnostic_clock();
+        unsigned hot_opened=0;
+        gangstar_texture_hot_preloading(1);
+        for(unsigned i=0;i<RIO_HOT_PRELOAD_COUNT;++i) {
+            char path[192];uintptr_t file=0;
+            snprintf(path,sizeof(path),"_packetc/%s",rio_hot_preload_names[i]);
+            open((uintptr_t)&file,fs,(uintptr_t)path,0);
+            if(file){++hot_opened;world_source_file_release(file);}
+        }
+        gangstar_texture_hot_preloading(0);
+        l_info("RIO_TEXTURE_HOT_PRELOAD attempted=%u opened=%u elapsed_us=%llu",(unsigned)RIO_HOT_PRELOAD_COUNT,hot_opened,
+            (unsigned long long)(rio_diagnostic_clock()-hot_began));
+        gangstar_texture_hot_report();
+    }
+#endif
     world_source_preload_done=ready==requested;
     l_info("RIO_SOURCE_PREWARM requested=%u ready=%u missing=%u original=%u expected_bytes=%u elapsed_us=%llu",
         requested,ready,missing,original,expected_bytes,
