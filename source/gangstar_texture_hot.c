@@ -2,6 +2,7 @@
  * Frame thread only: the caller (pak-entry open hook) checks the thread. */
 #include "gangstar_texture_hot.h"
 #include "gangstar_archive_cache.h"
+#include "gangstar_heap_usage.h"
 #include "utils/logger.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -20,7 +21,9 @@ static const char *const hot_paths[2] = {
 static const uint64_t hot_lengths[2] = {UINT64_C(2119380688), UINT64_C(3709754)};
 
 #ifdef __vita__
-static size_t heap_used(void) { struct mallinfo m = mallinfo(); return (size_t)m.uordblks; }
+// The preload admits a burst of entries and must see each one; reloads during
+// gameplay only need a recent reading (no malloc-lock walk per texture open).
+static size_t heap_used(void) { return hot_preloading ? gangstar_heap_used_exact() : gangstar_heap_used_recent(); }
 #else
 size_t rio_hot_test_heap_used(void);   // host tests supply the heap reading
 static size_t heap_used(void) { return rio_hot_test_heap_used(); }

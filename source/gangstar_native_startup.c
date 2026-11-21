@@ -1353,6 +1353,10 @@ static void audio_probe_report(void) {
             (unsigned long long)e->us[14],e->calls[14],(unsigned long long)e->us[15],e->calls[15],
             e->source_frames,e->source_rate,e->source_channels,e->cpu_valid,
             (unsigned long long)e->run_clocks,e->preemptions,e->releases,e->migrations);
+        l_info("RIO_EMITTER_ALLOC object=0x%x started_us=%llu alloc_us=%llu alloc_calls=%u alloc_max_us=%llu heap_walk_overlaps=%u",
+            (unsigned)e->object,(unsigned long long)e->started,
+            (unsigned long long)e->us[RIO_AUDIO_ALLOC],e->calls[RIO_AUDIO_ALLOC],
+            (unsigned long long)e->alloc_max,e->alloc_walk_overlaps);
     }
     if(dropped)l_info("RIO_EMITTER_UPDATE dropped=%u",dropped);
 }

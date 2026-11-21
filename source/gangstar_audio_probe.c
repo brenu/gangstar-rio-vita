@@ -38,6 +38,14 @@ void rio_audio_phase(unsigned kind,uint64_t elapsed) {
     RioAudioProbeScope *scope=pthread_getspecific(key);
     if(scope) { scope->event.us[kind]+=elapsed;++scope->event.calls[kind]; }
 }
+void rio_audio_alloc(uint64_t elapsed,int walk_overlap) {
+    if(!atomic_load(&ready))return;
+    RioAudioProbeScope *scope=pthread_getspecific(key);
+    if(!scope)return;
+    scope->event.us[RIO_AUDIO_ALLOC]+=elapsed;++scope->event.calls[RIO_AUDIO_ALLOC];
+    if(elapsed>scope->event.alloc_max)scope->event.alloc_max=elapsed;
+    if(walk_overlap)++scope->event.alloc_walk_overlaps;
+}
 void rio_audio_source(unsigned frames,unsigned rate,unsigned channels) {
     if(!atomic_load(&ready))return;
     RioAudioProbeScope *scope=pthread_getspecific(key);

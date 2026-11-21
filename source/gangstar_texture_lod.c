@@ -2,6 +2,7 @@
 #include "gangstar_archive_cache.h"
 #include "gangstar_source_cache.h"
 #include "gangstar_lightmap_pack.h"
+#include "gangstar_heap_usage.h"
 #include "utils/logger.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -33,8 +34,7 @@ static unsigned source_priority(RioSourceKey key) {
 static size_t source_budget(size_t reader_bytes) {
     size_t limit=RIO_SOURCE_CACHE_LIMIT;
 #ifdef __vita__
-    struct mallinfo heap=mallinfo();
-    limit=rio_source_allowance(limit,source_cache.bytes,(size_t)heap.uordblks,192u*1024u*1024u,reader_bytes);
+    limit=rio_source_allowance(limit,source_cache.bytes,gangstar_heap_used_recent(),192u*1024u*1024u,reader_bytes);
 #else
     (void)reader_bytes;
 #endif

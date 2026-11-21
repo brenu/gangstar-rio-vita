@@ -2,6 +2,7 @@
 #include "gangstar_storage_trace.h"
 #ifdef GANGSTAR_LIGHTMAP_PACK
 #include "gangstar_diagnostics.h"
+#include "gangstar_heap_usage.h"
 #include "utils/logger.h"
 #include "gangstar_district_manifest.h"
 #include "lz4.h"
@@ -77,8 +78,7 @@ int gangstar_lightmap_pack_read(uint32_t offset,uint32_t size,void *destination)
  for(unsigned i=0;i<count;++i)if(entries[i].offset==offset && entries[i].size==size) {
   if(atomic_load(&entries[i].bad))break;
 #ifdef __vita__
-  struct mallinfo heap=mallinfo();
-  if((uint64_t)(unsigned)heap.uordblks+entries[i].packed>192u*1024u*1024u)break;
+  if((uint64_t)gangstar_heap_used_recent()+entries[i].packed>192u*1024u*1024u)break;
 #endif
   void *packed=malloc(entries[i].packed);if(!packed)break;
   uint64_t began=rio_diagnostic_clock();

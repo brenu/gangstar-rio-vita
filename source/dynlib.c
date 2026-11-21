@@ -22,6 +22,7 @@
 #include "gangstar_asset_perf.h"
 #include "gangstar_wait_perf.h"
 #include "gangstar_audio_probe.h"
+#include "gangstar_heap_usage.h"
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <stdlib.h>
@@ -270,6 +271,68 @@ static void gangstar_syslog(int priority, const char *format, ...) {
     l_info("Android syslog[%d]: %s", priority, message);
 }
 
+#ifdef __vita__
+/* See gangstar_heap_usage.h: mallinfo() holds the malloc lock for a walk of
+ * every free chunk, so guards read a recent value instead of walking per call. */
+static _Atomic uint32_t heap_recent_used, heap_recent_left;
+static _Atomic uint64_t heap_recent_at;
+#ifndef GANGSTAR_RELEASE_BUILD
+static atomic_uint heap_walks, heap_recent_reads;
+static _Atomic uint64_t heap_walk_us, heap_walk_max_us, heap_walk_active, heap_walk_last_end;
+#endif
+size_t gangstar_heap_used_exact(void) {
+#ifndef GANGSTAR_RELEASE_BUILD
+    uint64_t began = sceKernelGetProcessTimeWide();
+    atomic_store(&heap_walk_active, began);
+#endif
+    struct mallinfo heap = mallinfo();
+    uint64_t now = sceKernelGetProcessTimeWide();
+#ifndef GANGSTAR_RELEASE_BUILD
+    atomic_store(&heap_walk_active, 0);
+    atomic_store(&heap_walk_last_end, now);
+    uint64_t spent = now - began, max = atomic_load(&heap_walk_max_us);
+    atomic_fetch_add(&heap_walks, 1);
+    atomic_fetch_add(&heap_walk_us, spent);
+    while (spent > max && !atomic_compare_exchange_weak(&heap_walk_max_us, &max, spent)) {}
+#endif
+    atomic_store(&heap_recent_used, (uint32_t)heap.uordblks);
+    atomic_store(&heap_recent_left, RIO_HEAP_RECENT_CALLS);
+    atomic_store(&heap_recent_at, now);
+    return (size_t)heap.uordblks;
+}
+size_t gangstar_heap_used_recent(void) {
+    uint64_t now = sceKernelGetProcessTimeWide(), at = atomic_load(&heap_recent_at);
+    unsigned left = atomic_load(&heap_recent_left);
+    // Races only cost an extra walk or one extra cached read.
+    if (!at || now - at >= RIO_HEAP_RECENT_US || !left) return gangstar_heap_used_exact();
+    atomic_fetch_sub(&heap_recent_left, 1);
+#ifndef GANGSTAR_RELEASE_BUILD
+    atomic_fetch_add(&heap_recent_reads, 1);
+#endif
+    return atomic_load(&heap_recent_used);
+}
+#endif
+#ifndef GANGSTAR_RELEASE_BUILD
+// Audio-thread allocations: the emitter lock is held across VoxAlloc/VoxFree.
+static uint64_t audio_alloc_begin(void) { return rio_audio_scope_active() ? rio_diagnostic_clock() : 0; }
+static void audio_alloc_end(uint64_t began) {
+    if (!began) return;
+    int saved = errno;
+    uint64_t spent = rio_diagnostic_clock() - began;
+#ifdef __vita__
+    int overlapped = spent >= 1000 &&
+        (atomic_load(&heap_walk_active) || atomic_load(&heap_walk_last_end) >= began);
+#else
+    int overlapped = 0;
+#endif
+    rio_audio_alloc(spent, overlapped);
+    errno = saved;
+}
+#else
+static inline uint64_t audio_alloc_begin(void) { return 0; }
+static inline void audio_alloc_end(uint64_t began) { (void)began; }
+#endif
+
 /* Allocation-free ledger: all large buffers; optional sparse small-allocation
  * sampling for short diagnostic runs. Normal builds exclude small objects. */
 #define RIO_HEAP_TRACK_MIN (4u * 1024u)
@@ -451,6 +514,11 @@ void gangstar_heap_diag_report(unsigned frame) {
     for (unsigned i = 0; i < RIO_HEAP_REPORT_SITES; ++i) if (top[i].count)
         l_info("RIO_HEAP_SITE frame=%u caller=%p sampled_allocs=%u estimated_bytes=%llu",
             frame, (void *)top[i].caller, top[i].count, (unsigned long long)top[i].bytes);
+#if defined(__vita__) && !defined(GANGSTAR_RELEASE_BUILD)
+    l_info("RIO_HEAP_WALK frame=%u walks=%u walk_us=%llu walk_max_us=%llu recent_reads=%u",
+        frame, atomic_exchange(&heap_walks, 0), (unsigned long long)atomic_exchange(&heap_walk_us, 0),
+        (unsigned long long)atomic_exchange(&heap_walk_max_us, 0), atomic_exchange(&heap_recent_reads, 0));
+#endif
 }
 
 static void gangstar_allocation_failed(const char *operation, size_t size, uintptr_t caller) {
@@ -463,14 +531,18 @@ static void gangstar_allocation_failed(const char *operation, size_t size, uintp
 }
 static void *gangstar_malloc(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    uint64_t audio = audio_alloc_begin();
     void *result = malloc(size);
+    audio_alloc_end(audio);
     if (!result && size) gangstar_allocation_failed("malloc", size, caller);
     if (result) rio_heap_allocated(result, size, caller);
     return result;
 }
 static void *gangstar_calloc(size_t count, size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    uint64_t audio = audio_alloc_begin();
     void *result = calloc(count, size);
+    audio_alloc_end(audio);
     if (!result && count && size)
         gangstar_allocation_failed("calloc", count <= SIZE_MAX / size ? count * size : SIZE_MAX, caller);
     if (result && size && count <= SIZE_MAX / size) rio_heap_allocated(result, count * size, caller);
@@ -478,29 +550,46 @@ static void *gangstar_calloc(size_t count, size_t size) {
 }
 static void *gangstar_realloc(void *ptr, size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    uint64_t audio = audio_alloc_begin();
     void *result = realloc(ptr, size);
+    audio_alloc_end(audio);
     if (!result && size) gangstar_allocation_failed("realloc", size, caller);
     if (result || !size) rio_heap_reallocated(ptr, result, size, caller);
     return result;
 }
-static void gangstar_free(void *ptr) { rio_heap_freed(ptr); free(ptr); }
+static void gangstar_free(void *ptr) {
+    rio_heap_freed(ptr);
+    uint64_t audio = audio_alloc_begin();
+    free(ptr);
+    audio_alloc_end(audio);
+}
 static void *gangstar_new(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    uint64_t audio = audio_alloc_begin();
     void *result = ((void *(*)(size_t))_Znwj)(size);
+    audio_alloc_end(audio);
     if (result) rio_heap_allocated(result, size, caller);
     return result;
 }
 static void *gangstar_new_array(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
+    uint64_t audio = audio_alloc_begin();
     void *result = ((void *(*)(size_t))_Znaj)(size);
+    audio_alloc_end(audio);
     if (result) rio_heap_allocated(result, size, caller);
     return result;
 }
 static void gangstar_delete(void *ptr) {
-    rio_heap_freed(ptr); ((void (*)(void *))_ZdlPv)(ptr);
+    rio_heap_freed(ptr);
+    uint64_t audio = audio_alloc_begin();
+    ((void (*)(void *))_ZdlPv)(ptr);
+    audio_alloc_end(audio);
 }
 static void gangstar_delete_array(void *ptr) {
-    rio_heap_freed(ptr); ((void (*)(void *))_ZdaPv)(ptr);
+    rio_heap_freed(ptr);
+    uint64_t audio = audio_alloc_begin();
+    ((void (*)(void *))_ZdaPv)(ptr);
+    audio_alloc_end(audio);
 }
 
 static void *gangstar_new_array_nothrow(size_t size, const void *tag) {
