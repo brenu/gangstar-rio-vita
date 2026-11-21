@@ -19,6 +19,7 @@ static struct JNINativeInterface previous;
 static uintptr_t (*current_thread)(void);
 static struct {uintptr_t owner;unsigned depth;} scopes[128];
 static RioJniStringStats stats;
+static unsigned local_adds;   // under lock; lets the per-frame sweep skip idle frames
 static unsigned *depth_for(uintptr_t owner) {
  for(unsigned i=0;i<128;++i)if(scopes[i].owner==owner || !scopes[i].owner) {
   scopes[i].owner=owner;return &scopes[i].depth;
@@ -44,7 +45,7 @@ static int add_local(String *s,uintptr_t owner,unsigned depth) {
   else {r=calloc(1,sizeof(*r));if(!r)return 0;r->next=s->local.next;s->local.next=r;}
   r->owner=owner;r->depth=depth;
  }
- ++r->count;++s->locals;return 1;
+ ++r->count;++s->locals;++local_adds;return 1;
 }
 static void delete_local(String *s,uintptr_t owner,unsigned depth) {
  LocalRef *best=NULL;
@@ -199,7 +200,12 @@ jstring gangstar_jni_string_constant(const char *value) {
  pthread_mutex_unlock(&lock);return candidate;
 }
 void gangstar_jni_strings_frame_end(void) {
- pthread_mutex_lock(&lock);uintptr_t owner=current_thread();sweep(owner,0);unsigned *depth=depth_for(owner);if(depth)*depth=0;pthread_mutex_unlock(&lock);
+ // The sweep scans all 8192 registry slots. Every local it could release was
+ // added after the previous frame-end sweep (which cleared all of this
+ // owner's locals), so skip it on frames that created no local references.
+ pthread_mutex_lock(&lock);uintptr_t owner=current_thread();
+ if(local_adds){local_adds=0;sweep(owner,0);}
+ unsigned *depth=depth_for(owner);if(depth)*depth=0;pthread_mutex_unlock(&lock);
 }
 RioJniStringStats gangstar_jni_strings_stats(void){pthread_mutex_lock(&lock);RioJniStringStats s=stats;pthread_mutex_unlock(&lock);return s;}
 void gangstar_jni_strings_install(struct JNINativeInterface *t,uintptr_t (*thread_id)(void)) {

@@ -97,6 +97,10 @@ so_hook hook_arm(uintptr_t addr, uintptr_t dst);
  */
 so_hook hook_addr(uintptr_t addr, uintptr_t dst);
 
+/** Executable memory left in the module VM block, and a bump allocator for it. */
+size_t so_exec_available(void);
+void *so_alloc_exec(size_t size);
+
 /**
  * @brief Flushes the instruction and data caches for a module's text segment.
  *

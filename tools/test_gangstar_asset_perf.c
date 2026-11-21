@@ -28,28 +28,42 @@ void _log_print(int type,const char *format,...) {
 static const char input[] = "Texture profiler must preserve decompression output and status";
 uint64_t sceKernelGetProcessTimeWide(void) { now += 100; return now; }
 int sceKernelGetThreadId(void) { return thread; }
+// Sticky error model matching vitaGL: set by any call, cleared only by read.
+static GLenum pending_error;
+GLenum glGetError(void) { GLenum e = pending_error; pending_error = GL_NO_ERROR; return e; }
 void glTexImage2D(GLenum t, GLint l, GLint f, GLsizei w, GLsizei h, GLint b,
     GLenum sf, GLenum ty, const void *p) {
     assert(t == 1 && l == 2 && f == 3 && w == 4 && h == 5 && b == 0 && sf == 6 && ty == 7 && p == input);
+    assert(pending_error == GL_NO_ERROR);
     ++texture_calls; if(slow_upload)now+=5000;
 }
 void glTexSubImage2D(GLenum t, GLint l, GLint x, GLint y, GLsizei w, GLsizei h,
     GLenum f, GLenum ty, const void *p) {
     assert(t == 1 && l == 2 && x == 3 && y == 4 && w == 5 && h == 6 && f == 7 && ty == 8 && p == input);
+    assert(pending_error == GL_NO_ERROR);
     ++texture_calls;
 }
 void glCompressedTexImage2D(GLenum t, GLint l, GLenum f, GLsizei w, GLsizei h,
     GLint b, GLsizei n, const void *p) {
     assert(t == 1 && l == 2 && f == 3 && w == 4 && h == 5 && b == 0 && n == sizeof(input) && p == input);
+    assert(pending_error == GL_NO_ERROR);
     ++texture_calls;
 }
-void glGenerateMipmap(GLenum t) { assert(t == 1); ++texture_calls; }
+void glGenerateMipmap(GLenum t) { assert(t == 1); assert(pending_error == GL_NO_ERROR); ++texture_calls; }
 int main(void) {
     gangstar_asset_frame();
+    // An unrelated earlier GL error must not be reported after an upload.
+    pending_error = GL_INVALID_ENUM;
     gangstar_tex_image(1, 2, 3, 4, 5, 0, 6, 7, input);
+    assert(glGetError() == GL_NO_ERROR);
+    pending_error = GL_INVALID_ENUM;
     gangstar_tex_sub_image(1, 2, 3, 4, 5, 6, 7, 8, input);
+    pending_error = GL_INVALID_ENUM;
     gangstar_compressed_tex_image(1, 2, 3, 4, 5, 0, sizeof(input), input);
+    assert(glGetError() == GL_NO_ERROR);
+    pending_error = GL_INVALID_ENUM;
     gangstar_generate_mipmap(1);
+    assert(gangstar_stale_gl_errors() == 4);
     unsigned char packed[256], output[256]; uLongf packed_size = sizeof(packed);
     assert(compress(packed, &packed_size, (const Bytef *)input, sizeof(input)) == Z_OK);
     uLongf output_size = sizeof(output);
@@ -99,5 +113,5 @@ int main(void) {
     now+=10000000;
     gangstar_upload_report();assert(census_calls==2);
     gangstar_upload_report();assert(census_calls==2);
-    puts("Asset profiler: GL arguments, zlib output/status, frame reset, census throttling and background exclusion passed");
+    puts("Asset profiler: GL arguments, stale GL errors discarded before uploads, zlib output/status, frame reset, census throttling and background exclusion passed");
 }

@@ -5,7 +5,7 @@ struct GangstarMutexWaiter { struct GangstarMutexWaiter *next; intptr_t event; i
 // Caller holds queue lock. Ownership is published before waking the waiter.
 static void handoff(struct GangstarMutex *m,const GangstarMutexOps *o) {
     struct GangstarMutexWaiter *w=m->first; int expected=0;
-    if (w && atomic_compare_exchange_strong_explicit(&m->owner,&expected,w->thread,memory_order_acquire,memory_order_relaxed)) {
+    if (w && atomic_compare_exchange_strong_explicit(&m->owner,&expected,w->thread,memory_order_seq_cst,memory_order_seq_cst)) {
         m->first=w->next;if(!m->first)m->last=NULL;
         m->depth=1;o->signal(w->event);
     }
@@ -41,7 +41,9 @@ int gangstar_mutex_lock(struct GangstarMutex *m,const GangstarMutexOps *o,uint64
         if(!event) { o->pause();continue; } // Preserve progress if waiter resources are exhausted.
         struct GangstarMutexWaiter w={NULL,event,self};
         o->queue_lock();
-        atomic_fetch_add_explicit(&m->waiters,1,memory_order_release);
+        // seq_cst pairs with the unlock fast path: either this waiter's
+        // handoff sees owner==0, or the unlocker sees waiters!=0.
+        atomic_fetch_add_explicit(&m->waiters,1,memory_order_seq_cst);
         if(m->last)m->last->next=&w;else m->first=&w;
         m->last=&w;
         // Handles unlock-before-enqueue and unlock-before-wait; the event keeps
@@ -68,11 +70,12 @@ int gangstar_mutex_lock(struct GangstarMutex *m,const GangstarMutexOps *o,uint64
 int gangstar_mutex_unlock(struct GangstarMutex *m,const GangstarMutexOps *o) {
     if(atomic_load_explicit(&m->owner,memory_order_relaxed)!=o->self())return EPERM;
     if(--m->depth==0) {
-        // Serialize release with enqueue/recheck, preventing a lost wakeup
-        // even on ARM's weak memory ordering. No I/O occurs under this lock.
-        o->queue_lock();
-        atomic_store_explicit(&m->owner,0,memory_order_release);
-        handoff(m,o);o->queue_unlock();
+        // Uncontended release takes no global lock. The seq_cst store/load
+        // pair with the waiter's seq_cst increment and handoff CAS (Dekker):
+        // a waiter that enqueued after this load claims the free mutex itself.
+        atomic_store_explicit(&m->owner,0,memory_order_seq_cst);
+        if(!atomic_load_explicit(&m->waiters,memory_order_seq_cst))return 0;
+        o->queue_lock();handoff(m,o);o->queue_unlock();
     }
     return 0;
 }

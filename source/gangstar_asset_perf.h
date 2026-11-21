@@ -21,6 +21,7 @@ void gangstar_tex_image(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, G
 void gangstar_tex_sub_image(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
 void gangstar_compressed_tex_image(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *);
 void gangstar_generate_mipmap(GLenum);
+unsigned gangstar_stale_gl_errors(void);
 int gangstar_inflate(z_streamp, int);
 int gangstar_uncompress(Bytef *, uLongf *, const Bytef *, uLong);
 #endif

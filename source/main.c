@@ -25,6 +25,7 @@
 #include "gangstar_wait_perf.h"
 #include "gangstar_native_perf.h"
 #include "gangstar_shader_warmup.h"
+#include "gangstar_native_profile.h"
 
 // The Vita thread reproduces the Activity and GLSurfaceView lifecycle.
 int _newlib_heap_size_user = 256 * 1024 * 1024;
@@ -212,6 +213,7 @@ static int gangstar_main(void) {
     unsigned slow_frames = 0, very_slow_frames = 0;
     uint64_t last_swap_end=0, outside_us=0, outside_worst=0, last_report_us=0;
     SceUID game_thread = sceKernelGetThreadId();
+    uint64_t cpu_clock_before = 0;   // game-thread CPU time at the previous report
 #endif
     for (unsigned frame = 0; ; ++frame) {
 #ifndef GANGSTAR_RELEASE_BUILD
@@ -250,6 +252,7 @@ static int gangstar_main(void) {
 #ifndef GANGSTAR_RELEASE_BUILD
         uint64_t swap_end = sceKernelGetProcessTimeWide();
         last_swap_end=swap_end;
+        gangstar_native_profile_frame(frame, swap_end - frame_begin);
         GangstarFrameIo frame_io = gangstar_io_frame_end();
         if (swap_end - frame_begin >= 50000) {
             if (hitch_count < 64) {
@@ -326,11 +329,22 @@ static int gangstar_main(void) {
             uint64_t report_begin=sceKernelGetProcessTimeWide();
             unsigned fps = gangstar_perf_fps10(&sample);
             gangstar_native_phase_window_report();
-            l_info("RIO_PERF frames=%u fps=%u.%u work_us=%u swap_us=%u worst_us=%u over50ms=%u over100ms=%u outside_us=%llu outside_worst_us=%llu previous_report_us=%llu",
+            // CPU the game thread actually ran per frame. Near work_us means
+            // CPU-bound; well below it means it waited (GPU, locks, I/O).
+            SceKernelThreadInfo cpu_info = {.size = sizeof(cpu_info)};
+            unsigned cpu_us = 0;
+            if (!sceKernelGetThreadInfo(game_thread, &cpu_info)) {
+                uint64_t clocks = cpu_info.runClocks;
+                if (cpu_clock_before && clocks >= cpu_clock_before)
+                    cpu_us = (unsigned)((clocks - cpu_clock_before) / sample.frames);
+                cpu_clock_before = clocks;
+            }
+            l_info("RIO_PERF frames=%u fps=%u.%u work_us=%u swap_us=%u worst_us=%u over50ms=%u over100ms=%u outside_us=%llu outside_worst_us=%llu previous_report_us=%llu main_cpu_us=%u",
                 (unsigned)sample.frames, fps/10, fps%10,
                 (unsigned)(sample.work/sample.frames), (unsigned)(sample.swap/sample.frames),
                 (unsigned)sample.worst, slow_frames, very_slow_frames,
-                (unsigned long long)outside_us,(unsigned long long)outside_worst,(unsigned long long)last_report_us);
+                (unsigned long long)outside_us,(unsigned long long)outside_worst,(unsigned long long)last_report_us,
+                cpu_us);
             outside_us=outside_worst=0;
             slow_frames = very_slow_frames = 0;
             for (unsigned i = 0; i < hitch_count; ++i)

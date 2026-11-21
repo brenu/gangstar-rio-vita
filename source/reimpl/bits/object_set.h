@@ -21,13 +21,27 @@ static inline int gangstar_object_contains(const GangstarObjectSet *set, const v
     }
     return 0;
 }
+/* Lock-free probe for hot paths. A hit is exact (slots are published with
+ * release stores after the object is initialized). A miss can be transient
+ * during a concurrent removal, so callers recheck a miss under their lock. */
+static inline int gangstar_object_contains_unlocked(const GangstarObjectSet *set, const void *object) {
+    if (!object) return 0;
+    size_t slot = gangstar_object_hash(object);
+    for (size_t n = 0; n < GANGSTAR_OBJECT_SET_SIZE; ++n) {
+        const void *entry = __atomic_load_n(&set->slots[slot], __ATOMIC_ACQUIRE);
+        if (entry == object) return 1;
+        if (!entry) return 0;
+        slot = (slot + 1) & GANGSTAR_OBJECT_SET_MASK;
+    }
+    return 0;
+}
 static inline int gangstar_object_add(GangstarObjectSet *set, const void *object) {
     if (!object) return 0;
     if (gangstar_object_contains(set, object)) return 1;
     if (set->count >= GANGSTAR_OBJECT_SET_SIZE * 3 / 4) return 0;
     size_t slot = gangstar_object_hash(object);
     while (set->slots[slot]) slot = (slot + 1) & GANGSTAR_OBJECT_SET_MASK;
-    set->slots[slot] = object; ++set->count; return 1;
+    __atomic_store_n(&set->slots[slot], object, __ATOMIC_RELEASE); ++set->count; return 1;
 }
 static inline int gangstar_object_remove(GangstarObjectSet *set, const void *object) {
     if (!gangstar_object_contains(set, object)) return 0;

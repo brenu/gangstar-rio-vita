@@ -255,6 +255,7 @@ static void gangstar_hide_touch_buttons(void) {
 #endif
 
 void gangstar_native_startup_install(void);
+#include "gangstar_native_profile.h"
 // Mission-intro callbacks may outlive the shared MenuMgr layout during a
 // state transition. Never dispatch through a layout that has been released.
 static void *(*mission_intro_menu)(void);
@@ -379,6 +380,21 @@ static void gangstar_fps_camera_guard(void) {
     l_info("Gangstar FPS camera: optional scene-node position fallback installed");
 }
 
+#ifdef GANGSTAR_SKIP_TRACKING_SAVE
+// glot::TrackingManager::updateSaveFile rewrites Gameloft's analytics queue
+// file on the memory card (~100 ms on the frame thread, about once a minute).
+// Nothing ever uploads it on Vita, and no caller uses a return value.
+static void gangstar_skip_tracking_save(void *self) { (void)self; }
+static void gangstar_tracking_save_guard(void) {
+    uintptr_t save = so_symbol(&so_mod, "_ZN4glot15TrackingManager14updateSaveFileEv");
+    static const uint32_t expected[] = {0xe92d4ff0, 0xe59f482c};
+    if (save && !memcmp((void *)save, expected, sizeof(expected))) {
+        hook_addr(save, (uintptr_t)gangstar_skip_tracking_save);
+        l_info("Gangstar: analytics tracking-file writes disabled");
+    } else l_warn("Gangstar: tracking save layout not recognised; left enabled");
+}
+#endif
+
 void so_patch(void) {
 	so_patch_module(&so_mod);
 	uintptr_t console = so_symbol(&so_mod, "_ZN3glf7Console8PrintRawEPKc");
@@ -392,5 +408,10 @@ void so_patch(void) {
 	gangstar_hide_touch_buttons();
 #endif
 	gangstar_trace_audio_init();
+#ifdef GANGSTAR_SKIP_TRACKING_SAVE
+	gangstar_tracking_save_guard();
+#endif
 	gangstar_native_startup_install();
+	// Must run last: it only hooks functions whose prologue is still original.
+	gangstar_native_profile_install();
 }

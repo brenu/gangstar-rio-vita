@@ -154,8 +154,30 @@ static void texture_level(uint64_t began, GLint level, GLsizei width, GLsizei he
     if (width > 0 && (unsigned)width > stats.max_width) stats.max_width = width;
     if (height > 0 && (unsigned)height > stats.max_height) stats.max_height = height;
 }
+// The native CTexture::updateData calls glGetError() immediately after every
+// per-level upload and permanently marks the whole texture as failed
+// (flags byte +0x38 |= 0x10, ELF 0x882750..0x882760) when it returns
+// anything. vitaGL keeps a single sticky error that is only cleared by
+// glGetError(), so an unrelated earlier call that set an error and was never
+// read gets blamed on the next streamed texture -- typically the high-res
+// lightmap being loaded next to the player -- which is then drawn as
+// green/pink scenery until it is reloaded. Discard any stale error before
+// each upload so the native check only sees errors from that upload itself.
+static atomic_uint stale_gl_errors;
+static void discard_stale_gl_error(const char *api) {
+    GLenum stale = glGetError();
+    if (stale == GL_NO_ERROR) return;
+    unsigned seen = atomic_fetch_add_explicit(&stale_gl_errors, 1, memory_order_relaxed);
+    if (seen < 8)
+        l_warn("RIO_STALE_GL_ERROR error=0x%x discarded_before=%s count=%u",
+            (unsigned)stale, api, seen + 1);
+}
+unsigned gangstar_stale_gl_errors(void) {
+    return atomic_load_explicit(&stale_gl_errors, memory_order_relaxed);
+}
 void gangstar_generate_mipmap(GLenum target) {
     uint64_t began = start();
+    discard_stale_gl_error("glGenerateMipmap");
     glGenerateMipmap(target);
     if (began) ++stats.mip_generations;
     uint64_t elapsed=finish(RIO_ASSET_TEXTURE,began,0);(void)elapsed;
@@ -164,6 +186,7 @@ void gangstar_generate_mipmap(GLenum target) {
 void gangstar_tex_image(GLenum target, GLint level, GLint format, GLsizei width,
     GLsizei height, GLint border, GLenum source_format, GLenum type, const void *data) {
     uint64_t began = start();
+    discard_stale_gl_error("glTexImage2D");
     glTexImage2D(target, level, format, width, height, border, source_format, type, data);
     texture_level(began, level, width, height);
     uint64_t elapsed=finish(RIO_ASSET_TEXTURE,began,0);(void)elapsed;
@@ -172,6 +195,7 @@ void gangstar_tex_image(GLenum target, GLint level, GLint format, GLsizei width,
 void gangstar_tex_sub_image(GLenum target, GLint level, GLint x, GLint y, GLsizei width,
     GLsizei height, GLenum format, GLenum type, const void *data) {
     uint64_t began = start();
+    discard_stale_gl_error("glTexSubImage2D");
     glTexSubImage2D(target, level, x, y, width, height, format, type, data);
     texture_level(began, level, width, height);
     uint64_t elapsed=finish(RIO_ASSET_TEXTURE,began,0);(void)elapsed;
@@ -180,6 +204,7 @@ void gangstar_tex_sub_image(GLenum target, GLint level, GLint x, GLint y, GLsize
 void gangstar_compressed_tex_image(GLenum target, GLint level, GLenum format, GLsizei width,
     GLsizei height, GLint border, GLsizei size, const void *data) {
     uint64_t began = start();
+    discard_stale_gl_error("glCompressedTexImage2D");
     glCompressedTexImage2D(target, level, format, width, height, border, size, data);
     texture_level(began, level, width, height);
     uint64_t elapsed=finish(RIO_ASSET_TEXTURE,began,size>0?(uint64_t)size:0);(void)elapsed;

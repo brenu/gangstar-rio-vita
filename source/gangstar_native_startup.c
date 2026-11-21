@@ -42,6 +42,7 @@
 #include <pthread.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/processmgr.h>
+#include "gangstar_native_profile.h"
 extern so_module so_mod;
 
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
@@ -206,6 +207,7 @@ static void stream_residency_snapshot(uintptr_t manager);
 #define PROBE(N) \
 static __attribute__((noinline)) uintptr_t probe_##N(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { \
     uint64_t audio_began = (N>=9 && N<=12 && rio_audio_scope_active()) ? rio_diagnostic_clock() : 0; \
+    if (N==13 || N==14) gangstar_fs_trace_path((const char *)c); \
     uint64_t began = gangstar_wait_begin(); \
     uintptr_t result = probes[N].original(a, b, c, d); \
     if (N==18) stream_residency_snapshot(a); \
@@ -678,8 +680,11 @@ static void pin_texture(uintptr_t object, const char *name, unsigned size) {
     pthread_mutex_unlock(&texture_pin_lock);
 }
 #ifdef GANGSTAR_TEXTURE_PREWARM
+// Car damage maps are also requested from the image-loader worker (every few
+// frames while police cars spawn). Native texture refcounts are atomic
+// (intrusive_ptr_add_ref uses the cmpxchg helper), so those may be served too.
 static int pin_return_cached(uintptr_t out, uintptr_t manager, const char *name) {
-    if (!out || !texture_pin_hooks_ready || !gangstar_wait_is_main() ||
+    if (!out || !texture_pin_hooks_ready || !(gangstar_wait_is_main() || rio_texture_pin_car(name)) ||
         atomic_load(&texture_prewarm_done) != 2 || manager != texture_prewarm_owner) return 0;
     pthread_mutex_lock(&texture_pin_lock);
     uintptr_t object = texture_pin_suspended ? 0 : rio_texture_pin_find(&texture_pins, name);
@@ -1043,13 +1048,15 @@ static uintptr_t probe_36(uintptr_t out, uintptr_t manager, uintptr_t name, uint
 // This overload has a fifth stack argument. Keep its real ABI on BOTH paths.
 static uintptr_t probe_37(uintptr_t out, uintptr_t manager, uintptr_t file_ref, uintptr_t hash, uintptr_t mode) {
 #if defined(GANGSTAR_TEXTURE_PREWARM) && defined(GANGSTAR_TEXTURE_REF_CACHE)
-    if (file_ref && *(uintptr_t *)file_ref && gangstar_wait_is_main()) {
+    if (file_ref && *(uintptr_t *)file_ref) {
         uintptr_t file = *(uintptr_t *)file_ref;
         uintptr_t *vtable = *(uintptr_t **)file;
         const char *name = ((const char *(*)(uintptr_t))vtable[0x28 / 4])(file);
+        if (gangstar_wait_is_main() || rio_texture_pin_car(name)) {
         pin_request("file", manager, name, (const char *)hash, mode, (uintptr_t)__builtin_return_address(0));
         if (!mode && rio_texture_pin_key_matches(name, (const char *)hash) &&
             pin_return_cached(out, manager, name)) return out;
+        }
     }
 #endif
     typedef uintptr_t (*GetFile)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
@@ -1060,16 +1067,18 @@ static uintptr_t probe_37(uintptr_t out, uintptr_t manager, uintptr_t file_ref, 
 static uintptr_t probe_38(uintptr_t out, uintptr_t manager, uintptr_t file, uintptr_t hash_ref,
     uintptr_t mode, uintptr_t replacement, uintptr_t alpha_replacement) {
 #if defined(GANGSTAR_TEXTURE_PREWARM) && defined(GANGSTAR_TEXTURE_REF_CACHE)
-    if (file && gangstar_wait_is_main()) {
+    if (file) {
         uintptr_t *vtable = *(uintptr_t **)file;
         const char *name = ((const char *(*)(uintptr_t))vtable[0x28 / 4])(file);
         const char *hash = hash_ref ? *(const char **)hash_ref : NULL;
+        if (gangstar_wait_is_main() || rio_texture_pin_car(name)) {
         unsigned overrides = (replacement && *(uintptr_t *)replacement) ||
             (alpha_replacement && *(uintptr_t *)alpha_replacement);
         pin_request("internal", manager, name, hash, mode | (overrides ? 256u : 0u),
             (uintptr_t)__builtin_return_address(0));
         if (!mode && !overrides && rio_texture_pin_key_matches(name, hash) &&
             pin_return_cached(out, manager, name)) return out;
+        }
     }
 #endif
     typedef uintptr_t (*GetInternal)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
@@ -1566,7 +1575,12 @@ static uintptr_t stream_partial_map(uintptr_t mapped,uintptr_t name,uintptr_t c,
     !partial_mip_bytes || !partial_caller(caller))return original(mapped,name,c,d);
  RioPartialMap *slot=NULL;
  for(unsigned i=0;i<16;++i) {
-  if(partial_maps[i].mapped==mapped) {free(partial_maps[i].data);memset(&partial_maps[i],0,sizeof(partial_maps[i]));}
+  // A slot for this address is stale: the previous reader never reached
+  // stream_partial_mips, so its buffer was owned (and freed) by the native
+  // reader destructor. The address is only being reused by a new reader.
+  // Never free it again here: that was a heap double free which could hand
+  // the same block to two owners (e.g. texture backing in the newlib pool).
+  if(partial_maps[i].mapped==mapped)memset(&partial_maps[i],0,sizeof(partial_maps[i]));
   if(!partial_maps[i].mapped && !slot)slot=&partial_maps[i];
  }
  if(!slot || !mapped || !name)return original(mapped,name,c,d);

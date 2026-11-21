@@ -763,6 +763,16 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 
 	int mip_count, tex_width, tex_height;
 	void *texture_data;
+	// sceClibMspaceRealloc/newlib realloc free the old block immediately when
+	// they move it. If the texture was drawn in the last few frames the GPU may
+	// still read that block, and a later allocation can overwrite it. In that
+	// case copy into fresh storage and retire the old block through the GC.
+#ifndef TEXTURES_SPEEDHACK
+	const int in_flight = tex->last_frame != OBJ_NOT_USED && tex->last_frame != OBJ_CACHED &&
+		vgl_framecount - tex->last_frame <= FRAME_PURGE_FREQ;
+#else
+	const int in_flight = 1;
+#endif
 	if (mip_level) {
 		mip_count = tex->mip_count - 1;
 		tex_width = max_width;
@@ -784,7 +794,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
             } else
 #endif
             {
-                texture_data=vgl_realloc(tex->data,allocation_size);
+                texture_data=in_flight?NULL:vgl_realloc(tex->data,allocation_size);
                 if (!texture_data && allocation_size!=(size_t)tex_size) {
                     upload_stage(6,upload_clock(profile_etc),allocation_size);
 #if defined(VGL_UPLOAD_STAGES) && defined(VGL_ETC1_RESERVE_MIPS)
@@ -806,7 +816,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
                     } else {
                         upload_stage(8,upload_clock(profile_etc),allocation_size);
                         allocation_size=tex_size;
-                        texture_data=vgl_realloc(tex->data,allocation_size);
+                        texture_data=in_flight?NULL:vgl_realloc(tex->data,allocation_size);
                     }
                 }
                 if (!texture_data) {

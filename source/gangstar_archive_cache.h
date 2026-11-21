@@ -19,6 +19,11 @@
 #error "Supported archive cache sizes are 16, 32 or 64 MiB"
 #endif
 #define RIO_CACHE_BLOCKS (RIO_CACHE_MIB * 1024 / RIO_CACHE_BLOCK_KIB)
+// Requests at least this large bypass the block cache (see rio_archive_cache_read).
+#ifndef RIO_CACHE_DIRECT_MIN
+#define RIO_CACHE_DIRECT_MIN (512u * 1024u)
+#endif
+#define RIO_CACHE_DIRECT_CHUNK (256u * 1024u)
 typedef ssize_t (*RioArchiveReadAt)(void *, void *, size_t, uint64_t);
 typedef struct {
     uint64_t offset, age;
@@ -26,7 +31,7 @@ typedef struct {
     int archive, valid, loading;
 } RioArchiveBlock;
 typedef struct {
-    uint64_t hit_bytes, miss_bytes, disk_bytes, fills;
+    uint64_t hit_bytes, miss_bytes, disk_bytes, fills, direct_bytes;
 } RioArchiveStats;
 typedef struct {
     unsigned char *memory;

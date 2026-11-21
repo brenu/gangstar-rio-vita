@@ -317,6 +317,31 @@ option(GANGSTAR_VITAGL_SAFE_DRAW_SPEEDHACK "Allow direct GPU reads of large clie
 option(GANGSTAR_VITAGL_SAMPLERS_SPEEDHACK "Experiment with dense shader sampler resolution" OFF)
 option(GANGSTAR_VITAGL_TEXTURE_UPLOADS_SPEEDHACK "Experiment with direct compressed texture transfer sources" OFF)
 option(GANGSTAR_VITAGL_NO_DMAC "Use CPU copies instead of sceDmacMemcpy in VitaGL" OFF)
+option(GANGSTAR_NATIVE_PROFILER "Diagnostic: time ~2300 engine functions on the main thread and report the slowest in frames over 50 ms (needs RUNTIME_DIAGNOSTICS)" OFF)
+if (GANGSTAR_NATIVE_PROFILER)
+  add_definitions(-DGANGSTAR_NATIVE_PROFILER)
+  # The hook table is derived from the game binary, so it is generated here
+  # instead of being committed. Regenerated when the library or script changes.
+  set(RIO_PROFILE_SO "${CMAKE_SOURCE_DIR}/../work/libgl2jni.so" CACHE FILEPATH
+    "libgl2jni.so the native profiler hook table is generated from")
+  if (NOT EXISTS "${RIO_PROFILE_SO}")
+    message(FATAL_ERROR "GANGSTAR_NATIVE_PROFILER needs the game library: ${RIO_PROFILE_SO} not found "
+      "(set RIO_PROFILE_SO to its path)")
+  endif()
+  set(RIO_PROFILE_GEN_DIR "${CMAKE_SOURCE_DIR}/work/generated")
+  add_custom_command(
+    OUTPUT "${RIO_PROFILE_GEN_DIR}/gangstar_native_profile_sites.h"
+           "${RIO_PROFILE_GEN_DIR}/native_profile_sites.txt"
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/generate_native_profile_sites.py"
+            "${RIO_PROFILE_SO}" "${RIO_PROFILE_GEN_DIR}"
+    DEPENDS "${RIO_PROFILE_SO}" "${CMAKE_SOURCE_DIR}/tools/generate_native_profile_sites.py"
+    COMMENT "Generating native profiler hook table from libgl2jni.so")
+  include_directories("${RIO_PROFILE_GEN_DIR}")
+endif()
+option(GANGSTAR_SKIP_TRACKING_SAVE "Skip Gameloft analytics (glot) tracking-file writes to the memory card" ON)
+if (GANGSTAR_SKIP_TRACKING_SAVE)
+  add_definitions(-DGANGSTAR_SKIP_TRACKING_SAVE)
+endif()
 set(GANGSTAR_HOST_OPT_LEVEL "2" CACHE STRING "Host bridge optimization level for performance profile (2 or 3)")
 if (GANGSTAR_PERFORMANCE_PROFILE)
   if (NOT GANGSTAR_HOST_OPT_LEVEL MATCHES "^[23]$")
@@ -400,6 +425,7 @@ set(SOURCES
     source/gangstar_asset_perf.c
     source/gangstar_wait_perf.c
     source/gangstar_native_startup.c
+    source/gangstar_native_profile.c
     source/gangstar_shader_warmup.c
     source/gangstar_capture.c
     source/patch.c
@@ -437,6 +463,9 @@ if(GANGSTAR_LIGHTMAP_BENCH OR GANGSTAR_LIGHTMAP_PACK)
   list(APPEND SOURCES lib/lz4/lz4.c)
 endif()
 add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
+if (GANGSTAR_NATIVE_PROFILER)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${RIO_PROFILE_GEN_DIR}/gangstar_native_profile_sites.h")
+endif()
 target_link_libraries(${CMAKE_PROJECT_NAME} rio_adpcm)
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
   "-Wl,--wrap=sceAudioOutOpenPort,--wrap=sceAudioOutSetConfig,--wrap=sceAudioOutOutput")
@@ -520,6 +549,10 @@ endif()
 option(GANGSTAR_VITAGL_MATH_SPEEDHACK "Use VitaGL fast matrix transforms" ON)
 if(GANGSTAR_VITAGL_MATH_SPEEDHACK)
   string(APPEND VITAGL_MAKE_FLAGS " MATH_SPEEDHACK=1")
+endif()
+option(GANGSTAR_FRAME_CAP_30 "Present at a steady 30 fps (vsync every second vblank) instead of a variable 25-60 fps" OFF)
+if(GANGSTAR_FRAME_CAP_30)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GANGSTAR_FRAME_CAP_30)
 endif()
 option(GANGSTAR_VERTEX_CPU_POOLS "Give temporary vertex buffers enough CPU-side pool capacity" ON)
 if(GANGSTAR_VERTEX_CPU_POOLS)

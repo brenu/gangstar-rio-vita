@@ -25,9 +25,38 @@ ssize_t rio_archive_cache_read(RioArchiveCache *cache, int archive, uint64_t fil
     if (!count || offset >= file_size) return 0;
     if ((uint64_t)count > file_size - offset) count = (size_t)(file_size - offset);
     size_t done = 0;
+    // Large single requests (whole DDS lightmaps, world chunks: 0.5-16 MiB)
+    // are read once and never reused from this cache. Routing them through it
+    // cost an extra memcpy per byte, a metadata scan per 32 KiB, and evicted
+    // the small hot index/metadata blocks for everyone else. The archives are
+    // immutable, so read the block-aligned middle directly into the caller's
+    // buffer. Each physical read stays at the existing 256 KiB batch size so
+    // audio streaming still interleaves between them.
+    const int direct = count >= RIO_CACHE_DIRECT_MIN;
     while (done < count) {
         uint64_t block_offset = offset / RIO_CACHE_BLOCK_SIZE * RIO_CACHE_BLOCK_SIZE;
         size_t within = (size_t)(offset - block_offset);
+        if (direct && !within && count - done >= RIO_CACHE_BLOCK_SIZE) {
+            size_t take = count - done;
+            if (take > RIO_CACHE_DIRECT_CHUNK) take = RIO_CACHE_DIRECT_CHUNK;
+            take -= take % RIO_CACHE_BLOCK_SIZE;
+            size_t loaded = 0;
+            while (loaded < take) {
+                ssize_t n = read_at(context, (unsigned char *)destination + done + loaded,
+                    take - loaded, offset + loaded);
+                if (n < 0) { if (errno == EINTR) continue; return done ? (ssize_t)done : -1; }
+                if (!n) break;
+                if ((size_t)n > take - loaded) { errno = EIO; return done ? (ssize_t)done : -1; }
+                loaded += (size_t)n;
+            }
+            pthread_mutex_lock(&cache->lock);
+            cache->stats.disk_bytes += loaded; cache->stats.miss_bytes += loaded;
+            cache->stats.direct_bytes += loaded;
+            pthread_mutex_unlock(&cache->lock);
+            done += loaded; offset += loaded;
+            if (loaded != take) { if (!done) errno = EIO; return done ? (ssize_t)done : -1; }
+            continue;
+        }
         size_t take = RIO_CACHE_BLOCK_SIZE - within;
         if (take > count - done) take = count - done;
         // Metadata/copy lock never covers disk I/O. Loading blocks are pinned;
@@ -63,7 +92,10 @@ retry: ;
             // all destinations remain pinned while the single disk read runs.
             unsigned batch=(unsigned)((count-done+within+RIO_CACHE_BLOCK_SIZE-1)/RIO_CACHE_BLOCK_SIZE);
             unsigned maximum=(256u*1024u)/RIO_CACHE_BLOCK_SIZE;
-            if(count-done<2u*RIO_CACHE_BLOCK_SIZE)batch=1;
+            // A small read straddling a block boundary fetches both blocks in
+            // one request: each physical read costs ~8-20 ms of latency on the
+            // memory card, far more than the extra 32 KiB of transfer.
+            if(direct)batch=1; // direct: unaligned head/tail only
             if(batch>maximum)batch=maximum;
             if(batch>cache->block_count)batch=cache->block_count;
             if(batch<2)batch=1;

@@ -108,7 +108,8 @@ int main(void) {
     struct Source a = {0}, b = {.archive = 1}, reopened = {0};
     check(&a, RIO_CACHE_BLOCK_SIZE - 17, 93);
     RioArchiveStats stats = rio_archive_cache_stats(&cache);
-    assert(stats.fills == 2 && stats.miss_bytes == 93);
+    // A boundary-straddling read fills both blocks with ONE physical read.
+    assert(stats.fills == 2 && stats.miss_bytes == 17 && stats.hit_bytes == 76);
     check(&reopened, RIO_CACHE_BLOCK_SIZE - 17, 93);
     assert(reopened.calls == 0); // independent handles reuse the archive blocks
     check(&b, RIO_CACHE_BLOCK_SIZE - 17, 93);

@@ -13,6 +13,9 @@ typedef char GLchar;
 #define GL_SHADER_TYPE 0x8B4F
 #define GL_SHADER_SOURCE_LENGTH 0x8B88
 #define GL_LINK_STATUS 0x8B82
+#define GL_NO_ERROR 0
+#define GL_INVALID_ENUM 0x0500
+GLenum glGetError(void);
 void glGetAttachedShaders(GLuint, GLsizei, GLsizei *, GLuint *);
 void glGetShaderiv(GLuint, GLenum, GLint *);
 void glGetShaderSource(GLuint, GLsizei, GLsizei *, GLchar *);

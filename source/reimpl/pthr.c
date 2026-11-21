@@ -102,7 +102,14 @@ PTHR_INLINE int _attr_t_static_init(pthread_attr_t_bionic * attr) {
 }
 
 // null check for `mutex` param must be performed before this, `attr` is fine as null
+// Every native lock/unlock/signal used to take registry_lock just to confirm
+// the object was initialized: one global lock serializing all threads. Once
+// an object is registered (real_ptr published before its slot), skip it.
+PTHR_INLINE int _sync_known(const void *object, const void *real) {
+    return (uintptr_t)real > 0xffff && gangstar_object_contains_unlocked(&initialized_objects, object);
+}
 PTHR_INLINE int _mutex_t_static_init(pthread_mutex_t_bionic *mutex, const pthread_mutexattr_t *attr) {
+    if (!attr && _sync_known(mutex, __atomic_load_n(&mutex->real_ptr, __ATOMIC_ACQUIRE))) return 0;
     pthread_mutex_lock(&registry_lock);
     if (gangstar_object_contains(&initialized_objects, mutex)) {
         pthread_mutex_unlock(&registry_lock); return 0;
@@ -118,15 +125,18 @@ PTHR_INLINE int _mutex_t_static_init(pthread_mutex_t_bionic *mutex, const pthrea
         atomic_init(&real->acquire_site,0);
         atomic_init(&real->waiters, 0);
         real->kind = kind;
-        if (!gangstar_object_add(&initialized_objects, mutex)) result = EAGAIN;
+        // Publish real_ptr before the registry slot (lock-free readers).
+        struct GangstarMutex *previous = mutex->real_ptr;
+        __atomic_store_n(&mutex->real_ptr, real, __ATOMIC_RELEASE);
+        if (!gangstar_object_add(&initialized_objects, mutex)) { result = EAGAIN; mutex->real_ptr = previous; }
     }
     if (result) { free(real); report_sync_error("mutex", mutex, result); }
-    else mutex->real_ptr = real;
     pthread_mutex_unlock(&registry_lock);
     return result;
 }
 
 PTHR_INLINE int _cond_t_static_init(pthread_cond_t_bionic *cond, const pthread_condattr_t *attr) {
+    if (_sync_known(cond, __atomic_load_n(&cond->real_ptr, __ATOMIC_ACQUIRE))) return 0;
     pthread_mutex_lock(&registry_lock);
     if (gangstar_object_contains(&initialized_objects, cond)) {
         pthread_mutex_unlock(&registry_lock); return 0;
@@ -134,11 +144,12 @@ PTHR_INLINE int _cond_t_static_init(pthread_cond_t_bionic *cond, const pthread_c
     (void)attr;
     struct GangstarCondition *real = calloc(1, sizeof(*real));
     int result = real ? 0 : ENOMEM;
+    struct GangstarCondition *previous = cond->real_ptr;
+    if (!result) __atomic_store_n(&cond->real_ptr, real, __ATOMIC_RELEASE);
     if (!result && !gangstar_object_add(&initialized_objects, cond)) {
-        result = EAGAIN;
+        result = EAGAIN; cond->real_ptr = previous;
     }
     if (result) { free(real); report_sync_error("condition", cond, result); }
-    else cond->real_ptr = real;
     pthread_mutex_unlock(&registry_lock);
     return result;
 }
@@ -235,7 +246,11 @@ int pthread_mutex_lock_soloader(pthread_mutex_t_bionic *mutex)
     int observed_owner=atomic_load_explicit(&real->owner,memory_order_relaxed);
     uintptr_t observed_site=atomic_load_explicit(&real->acquire_site,memory_order_relaxed);
     if(observed_owner!=atomic_load_explicit(&real->owner,memory_order_relaxed))observed_site=0;
+#ifdef GANGSTAR_RELEASE_BUILD
+    const uint64_t audio_began=0;   // diagnostic clock is 0 in release; skip the TLS lookup
+#else
     uint64_t audio_began=rio_audio_scope_active()?rio_diagnostic_clock():0;
+#endif
     uint64_t queued_began=0;
     int queued_result=gangstar_mutex_lock(real,&queued_mutex_ops,&queued_began);
     if(audio_began)rio_audio_phase(RIO_AUDIO_LOCK,rio_diagnostic_clock()-audio_began);
@@ -359,6 +374,9 @@ static int condition_signal(pthread_cond_t_bionic *cond, int all) {
     if (!cond) return EINVAL;
     int result = _cond_t_static_init(cond, NULL);
     if (result) return result;
+    // A waiter is queued under registry_lock before it releases the predicate
+    // mutex, so a signaller ordered after that release sees it here.
+    if (!__atomic_load_n(&cond->real_ptr->first, __ATOMIC_ACQUIRE)) return 0;
     pthread_mutex_lock(&registry_lock);
     struct GangstarCondition *real = cond->real_ptr;
     while (real->first) {
@@ -395,7 +413,7 @@ static int condition_wait(pthread_cond_t_bionic *cond, pthread_mutex_t_bionic *m
     pthread_mutex_lock(&registry_lock);
     struct GangstarCondition *real = cond->real_ptr;
     if (real->last) real->last->next = &waiter;
-    else real->first = &waiter;
+    else __atomic_store_n(&real->first, &waiter, __ATOMIC_RELEASE);
     real->last = &waiter;
     real->waiters++;
     uint64_t published = waiter.tracing ? rio_diagnostic_clock() : 0;

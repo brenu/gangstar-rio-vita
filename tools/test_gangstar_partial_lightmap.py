@@ -91,8 +91,16 @@ int main(void){
  stream_partial_mips((uintptr_t)&out,(uintptr_t)texture,(uintptr_t)map,44,55,4,77);
  assert(draw_calls==before && !out && !map[0]);
  assert(full_calls==4);
+ // A reader destroyed before stream_partial_mips frees its own buffer
+ // natively. A new reader at the same address must not free it again.
+ fail_read=0;bad_format=0;assert(stream_partial_map((uintptr_t)map,(uintptr_t)name,0,0)==1);
+ free((void*)map[0]);map[0]=map[1]=0; // native reader destructor
+ read_bytes=0;assert(stream_partial_map((uintptr_t)map,(uintptr_t)name,0,0)==1);
+ wanted_start=2785408u;
+ assert(stream_partial_mips((uintptr_t)&out,(uintptr_t)texture,(uintptr_t)map,44,55,4,77)==(uintptr_t)&out);
+ assert(out==123 && read_bytes==11064u && !map[0]);
 }
 ''')
 subprocess.run(['cc','-std=gnu11','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-DGANGSTAR_WORLD_TEXTURE_LOD','-DGANGSTAR_TEXTURE_LOD_EDGE=512','-I','source',str(p),'-o','work/tests/partial_lightmap'],check=True)
 subprocess.run(['work/tests/partial_lightmap'],check=True,env=dict(os.environ,ASAN_OPTIONS='detect_leaks=0'))
-print('Partial lightmaps: original headers, exact tails across all constructor sites, full-read fallback, seven arguments, worker exclusion and failed-read cleanup passed under ASan/UBSan')
+print('Partial lightmaps: original headers, exact tails across all constructor sites, full-read fallback, seven arguments, worker exclusion, failed-read cleanup and stale reader-slot reuse without double free passed under ASan/UBSan')

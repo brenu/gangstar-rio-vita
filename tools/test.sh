@@ -40,6 +40,15 @@ work/tests/gangstar_loose_index
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_obb_path.c -o work/tests/gangstar_obb_path
 work/tests/gangstar_obb_path
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source -pthread source/gangstar_mutex.c tools/test_gangstar_mutex.c -o work/tests/gangstar_mutex
+# Native profiler: actual thunk/relocation code on ARM under user-mode emulation (optional tools).
+if command -v arm-linux-gnueabihf-gcc >/dev/null && command -v qemu-arm >/dev/null; then
+  for mode in -marm -mthumb; do
+    arm-linux-gnueabihf-gcc -std=gnu11 -O2 $mode -static -Wall -Wextra -Werror -DGANGSTAR_NATIVE_PROFILER -DDEBUG_SOLOADER '-DRIO_PROF_SITES_HEADER="test_sites.h"' -I tools/native_profile_test/mock -I tools/native_profile_test -I source tools/native_profile_test/test.c tools/native_profile_test/functions.S source/gangstar_native_profile.c -o work/tests/native_profile$mode -lpthread
+    qemu-arm work/tests/native_profile$mode
+  done
+else
+  echo "Native profiler emulation test skipped (needs arm-linux-gnueabihf-gcc and qemu-arm)"
+fi
 work/tests/gangstar_mutex
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_alpha_overwrite.c -o work/tests/gangstar_alpha_overwrite
 work/tests/gangstar_alpha_overwrite

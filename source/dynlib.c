@@ -366,6 +366,11 @@ static int rio_heap_insert(void *ptr, size_t size, uintptr_t caller) {
     return 0;
 }
 static void rio_heap_allocated(void *ptr, size_t size, uintptr_t caller) {
+#if defined(GANGSTAR_RELEASE_BUILD) && !defined(GANGSTAR_HEAP_TRACE)
+    // Only diagnostic reports read this ledger; release frees must not take
+    // a global spinlock and probe a 16K-entry table on every call.
+    (void)ptr;(void)size;(void)caller; return;
+#endif
     if (size < RIO_HEAP_TRACK_MIN) {
 #ifdef GANGSTAR_HEAP_TRACE
         if(!rio_heap_sample(ptr))return;
@@ -376,6 +381,11 @@ static void rio_heap_allocated(void *ptr, size_t size, uintptr_t caller) {
     rio_heap_lock(); rio_heap_insert(ptr, size, caller); rio_heap_unlock();
 }
 static void rio_heap_freed(void *ptr) {
+#if defined(GANGSTAR_RELEASE_BUILD) && !defined(GANGSTAR_HEAP_TRACE)
+    // Only diagnostic reports read this ledger; release frees must not take
+    // a global spinlock and probe a 16K-entry table on every call.
+    (void)ptr; return;
+#endif
     if (!ptr) return;
 #ifdef GANGSTAR_HEAP_TRACE
     if(!rio_heap_sample(ptr) && malloc_usable_size(ptr)<RIO_HEAP_TRACK_MIN)return;
@@ -383,6 +393,11 @@ static void rio_heap_freed(void *ptr) {
     rio_heap_lock(); rio_heap_remove(rio_heap_find(ptr)); rio_heap_unlock();
 }
 static void rio_heap_reallocated(void *old_ptr, void *new_ptr, size_t size, uintptr_t caller) {
+#if defined(GANGSTAR_RELEASE_BUILD) && !defined(GANGSTAR_HEAP_TRACE)
+    // Only diagnostic reports read this ledger; release frees must not take
+    // a global spinlock and probe a 16K-entry table on every call.
+    (void)old_ptr;(void)new_ptr;(void)size;(void)caller; return;
+#endif
     rio_heap_lock();
     unsigned i = old_ptr ? rio_heap_find(old_ptr) : RIO_HEAP_TRACK_SLOTS;
     int tracked = i < RIO_HEAP_TRACK_SLOTS;

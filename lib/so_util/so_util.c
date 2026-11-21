@@ -126,6 +126,53 @@ so_hook hook_addr(uintptr_t addr, uintptr_t dst) {
 		return hook_arm(addr, dst);
 }
 
+/**
+ * @brief Executable memory for diagnostic code such as profiler trampolines.
+ *        With kubridge, one RWX block is allocated on first use; without it,
+ *        the unused tail of the module VM block is used. Never released.
+ */
+#ifdef USE_KUBRIDGE
+#define SO_EXEC_ARENA_SIZE (1024 * 1024)
+static SceUID exec_blk = -1;
+static uintptr_t exec_base = 0, exec_head = 0, exec_end = 0;
+static int so_exec_arena(void) {
+	if (exec_base) return 1;
+	if (exec_blk >= 0) return 0; // earlier attempt failed
+	exec_blk = sceKernelAllocMemBlock("so_exec", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, SO_EXEC_ARENA_SIZE, NULL);
+	if (exec_blk < 0) { exec_blk = 0; return 0; }
+	void *base = NULL;
+	if (sceKernelGetMemBlockBase(exec_blk, &base) < 0 || !base ||
+	    kuKernelMemProtect(base, SO_EXEC_ARENA_SIZE, KU_KERNEL_PROT_EXEC | KU_KERNEL_PROT_WRITE | KU_KERNEL_PROT_READ) < 0) {
+		sceKernelFreeMemBlock(exec_blk);
+		return 0;
+	}
+	exec_base = exec_head = (uintptr_t)base;
+	exec_end = exec_base + SO_EXEC_ARENA_SIZE;
+	return 1;
+}
+#endif
+size_t so_exec_available(void) {
+#ifndef USE_KUBRIDGE
+	if (!vm_ptr) return 0;
+	uintptr_t start = (vm_avail_addr + 15) & ~(uintptr_t)15, end = (uintptr_t)vm_ptr + VM_BLK_SIZE;
+#else
+	if (!so_exec_arena()) return 0;
+	uintptr_t start = (exec_head + 15) & ~(uintptr_t)15, end = exec_end;
+#endif
+	return start < end ? end - start : 0;
+}
+void *so_alloc_exec(size_t size) {
+	if (!size || size > so_exec_available()) return NULL;
+#ifndef USE_KUBRIDGE
+	uintptr_t start = (vm_avail_addr + 15) & ~(uintptr_t)15;
+	vm_avail_addr = start + size;
+#else
+	uintptr_t start = (exec_head + 15) & ~(uintptr_t)15;
+	exec_head = start + size;
+#endif
+	return (void *)start;
+}
+
 void so_flush_caches(const so_module *mod) {
 	SO_UTIL_LOG_VERBOSE("Flushing cache on addr: %x size: %u\n", mod->text_base, mod->text_size);
 #ifdef USE_KUBRIDGE

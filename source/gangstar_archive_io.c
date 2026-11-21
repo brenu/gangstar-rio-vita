@@ -703,9 +703,10 @@ void gangstar_archive_report(void) {
         atomic_exchange(&position_hits,0),atomic_exchange(&position_fallbacks,0),atomic_exchange(&position_exposures,0));
     RioArchiveStats s = rio_archive_cache_stats(&cache);
     (void)s;
-    l_info("RIO_CACHE hit_bytes=%llu miss_bytes=%llu disk_bytes=%llu fills=%llu",
+    l_info("RIO_CACHE hit_bytes=%llu miss_bytes=%llu disk_bytes=%llu fills=%llu direct_bytes=%llu",
         (unsigned long long)s.hit_bytes, (unsigned long long)s.miss_bytes,
-        (unsigned long long)s.disk_bytes, (unsigned long long)s.fills);
+        (unsigned long long)s.disk_bytes, (unsigned long long)s.fills,
+        (unsigned long long)s.direct_bytes);
     for (unsigned i = 0; i < trace_count; ++i) {
         struct ReadTrace *t = &traces[i];
         (void)t;

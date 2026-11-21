@@ -113,11 +113,25 @@ void gl_init() {
     // Reserve another 8 MiB in each CPU pool only with startup headroom.
     if(before.size_user>=32u*1024*1024 && before.size_phycont>=24u*1024*1024) {
         ram_mib=24;physical_mib=16;
+        // Each rotating buffer is ~10.7 MiB. With a 16 MiB phycont pool the
+        // third one spilled into CDRAM, taking ~11 MiB from textures. Late in
+        // a session that pushes 2048x2048 lightmaps out of VRAM into the game
+        // heap, and a failed lightmap upload shows as green/pink scenery.
+        // A 23 MiB phycont pool holds two buffers and keeps ~3 MiB free.
+        if(before.size_phycont>=26u*1024*1024) physical_mib=23;
     }
 #endif
     GLboolean fallback = vglInitWithCustomSizes(0, 960, 544,
         ram_mib * 1024 * 1024, 96 * 1024 * 1024, physical_mib * 1024 * 1024, 0, SCE_GXM_MULTISAMPLE_NONE);
     graphics_ready = 1;
+#ifdef GANGSTAR_FRAME_CAP_30
+    // Frame work is 25-40 ms in the city, so presenting on every vblank gives
+    // an uneven mix of 16/33/50 ms frames that reads as stutter. Present every
+    // second vblank instead for a steady 30 fps. (vglWaitVblankStart only
+    // accepts on/off, so set the interval directly.)
+    extern uint32_t vsync_interval;
+    vsync_interval = 2;
+#endif
     SceKernelFreeMemorySizeInfo after = {.size = sizeof(after)};
     sceKernelGetFreeMemorySize(&after);
     l_success("VitaGL init returned: resolution fallback=%d; pools RAM=%u CDRAM=96 physical=%u MiB",
