@@ -164,6 +164,8 @@ work/tests/gangstar_jni_strings
 
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_source_cache.c -Wl,--wrap=malloc,--wrap=free -o work/tests/gangstar_source_cache
 work/tests/gangstar_source_cache
+cc -std=gnu11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -I source -Wl,--wrap=open,--wrap=fstat,--wrap=close tools/test_gangstar_texture_hot.c source/gangstar_texture_hot.c -o work/tests/gangstar_texture_hot
+work/tests/gangstar_texture_hot
 
 python3 tools/test_gangstar_weapon_guard.py
 

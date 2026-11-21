@@ -338,6 +338,13 @@ if (GANGSTAR_NATIVE_PROFILER)
     COMMENT "Generating native profiler hook table from libgl2jni.so")
   include_directories("${RIO_PROFILE_GEN_DIR}")
 endif()
+option(GANGSTAR_TEXTURE_HOT_CACHE "Keep re-opened plain archive textures (district reflect/tile atlases) in a bounded RAM cache" ON)
+if (GANGSTAR_TEXTURE_HOT_CACHE)
+  if (NOT GANGSTAR_SMALL_LIGHTMAPS OR NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
+    message(FATAL_ERROR "GANGSTAR_TEXTURE_HOT_CACHE needs GANGSTAR_SMALL_LIGHTMAPS and GANGSTAR_NATIVE_STARTUP_PROFILE")
+  endif()
+  add_definitions(-DGANGSTAR_TEXTURE_HOT_CACHE)
+endif()
 option(GANGSTAR_SKIP_TRACKING_SAVE "Skip Gameloft analytics (glot) tracking-file writes to the memory card" ON)
 if (GANGSTAR_SKIP_TRACKING_SAVE)
   add_definitions(-DGANGSTAR_SKIP_TRACKING_SAVE)
@@ -422,6 +429,7 @@ set(SOURCES
     source/gangstar_district_preload.c
     source/gangstar_render_sample.c
     source/gangstar_texture_lod.c
+    source/gangstar_texture_hot.c
     source/gangstar_asset_perf.c
     source/gangstar_wait_perf.c
     source/gangstar_native_startup.c

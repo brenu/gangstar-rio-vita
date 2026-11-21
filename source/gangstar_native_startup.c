@@ -24,6 +24,10 @@
 #include "gangstar_pak_lookup.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_texture_lod.h"
+#ifdef GANGSTAR_TEXTURE_HOT_CACHE
+void *gangstar_texture_hot_get(int archive, uint64_t offset, uint32_t size);
+void gangstar_texture_hot_report(void);
+#endif
 #include "gangstar_district_manifest.h"
 #include "gangstar_district_preload.h"
 #include "gangstar_asset_perf.h"
@@ -538,6 +542,18 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
                                     return result;
                                 }
                                 free((void *)small);
+                            }
+                        }
+#endif
+#if defined(GANGSTAR_TEXTURE_HOT_CACHE) && defined(GANGSTAR_SMALL_LIGHTMAPS)
+                        // Plain textures the engine frees and re-opens (district
+                        // reflect/tile/blend atlases): serve reloads from RAM.
+                        if (main && make_memory_file && !rio_lod_name(name)) {
+                            void *hot = gangstar_texture_hot_get(archive, entry->offset, entry->size);
+                            if (hot) {
+                                uintptr_t result = make_memory_file(a, hot, entry->size, name, 1);
+                                if (*(uintptr_t *)a) return result;
+                                free(hot);
                             }
                         }
 #endif
@@ -1856,6 +1872,9 @@ void gangstar_native_startup_frame(void) {
 void gangstar_native_startup_report(unsigned frame) {
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     audio_probe_report();
+#endif
+#if defined(GANGSTAR_TEXTURE_HOT_CACHE) && !defined(GANGSTAR_RELEASE_BUILD)
+    gangstar_texture_hot_report();
 #endif
     gangstar_texture_lod_report(frame);
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
