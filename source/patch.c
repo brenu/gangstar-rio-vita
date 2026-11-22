@@ -36,6 +36,10 @@ extern "C"
 #include <stdatomic.h>
 #include "gangstar_controls.h"
 #include "gangstar_iap_offline.h"
+#include "gangstar_device_model.h"
+#ifdef GANGSTAR_VITA_PERF_PROFILE
+void gangstar_vita_profile_apply(unsigned char *profile);
+#endif
 
 void __kuser_memory_barrier(void) {
 	__sync_synchronize();
@@ -121,7 +125,48 @@ static void gangstar_customize_profile(void) {
     }
     l_info("Gangstar Vita HUD profile: %s viewport=%dx%d hudImageRatio=%g -> %g",
         name ? name : "(null)", width, height, previous, ratio);
+#ifdef GANGSTAR_VITA_PERF_PROFILE
+    gangstar_vita_profile_apply(profile);
+#endif
 }
+
+#ifdef GANGSTAR_DIRECT_DEVICE_MODEL
+// Glitch's drawPrimitives<CProgrammableGLDriver> runs
+//     if (strstr(AndroidGetDeviceModel(), "shield")) glFlush();
+// after every glDrawElements/glDrawArrays (an NVIDIA Shield workaround), and
+// Application::_Update/UpdateAfterMovie call it 7 more times per frame. Each
+// call is a full JNI round trip: GetEnv, FindClass, GetStaticMethodID (linear
+// strcmp over the method cache), CallStaticObjectMethod, GetStringUTFChars,
+// four bridge mutexes, plus a local reference that forces the 8192-slot JNI
+// string sweep at every frame end. The answer never changes, so give it
+// directly. The original returns the same pointer for every call and nothing
+// releases it, so a static writable buffer keeps the exact semantics.
+static char gangstar_device_model_name[] = RIO_PHONE_MODEL;
+#ifndef GANGSTAR_RELEASE_BUILD
+static atomic_uint gangstar_device_model_count;
+unsigned gangstar_device_model_calls(void) { return atomic_exchange(&gangstar_device_model_count, 0); }
+#else
+unsigned gangstar_device_model_calls(void) { return 0; }
+#endif
+static const char *gangstar_device_model(void) {
+#ifndef GANGSTAR_RELEASE_BUILD
+    atomic_fetch_add_explicit(&gangstar_device_model_count, 1, memory_order_relaxed);
+#endif
+    return gangstar_device_model_name;
+}
+static void gangstar_device_model_install(void) {
+    uintptr_t address = so_symbol(&so_mod, "_Z21AndroidGetDeviceModelv");
+    static const uint32_t expected[] = {0xe59f30ac, 0xe3a02000};
+    if (!address || memcmp((void *)address, expected, sizeof(expected))) {
+        l_warn("Gangstar: AndroidGetDeviceModel layout not recognised; JNI path kept");
+        return;
+    }
+    hook_addr(address, (uintptr_t)gangstar_device_model);
+    l_info("Gangstar: AndroidGetDeviceModel answered natively (%s)", RIO_PHONE_MODEL);
+}
+#else
+unsigned gangstar_device_model_calls(void) { return 0; }
+#endif
 
 static void gangstar_patch_hud_profile(void) {
     uintptr_t customize = so_symbol(&so_mod, "_Z30customProfileForSpecialDevicesv");
@@ -400,6 +445,9 @@ void so_patch(void) {
 	uintptr_t console = so_symbol(&so_mod, "_ZN3glf7Console8PrintRawEPKc");
 	if (console) hook_addr(console, (uintptr_t)gangstar_console_raw);
 	gangstar_patch_hud_profile();
+#ifdef GANGSTAR_DIRECT_DEVICE_MODEL
+	gangstar_device_model_install();
+#endif
 	gangstar_controls_init();
     gangstar_mission_intro_guard();
     gangstar_fps_camera_guard();

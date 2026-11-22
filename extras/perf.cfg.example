@@ -1,0 +1,24 @@
+# Gangstar Rio (Vita): optional performance profile overrides.
+# Copy to ux0:data/gangstarrio/perf.cfg and edit. Missing file = the game's own
+# DefaultProfile, unchanged. One key=value per line; '#' starts a comment;
+# "stock" keeps the game's value.
+
+# 0 ignores every line below.
+enabled=1
+
+# High-resolution city distance. Stock 13000; Gameloft's Low tier uses 11000.
+farPlaneHighResDist=stock
+# Low-resolution city distance (horizon). Stock 60000.
+farPlaneLowResDist=stock
+
+# NPC animation round robin: NPCs nearer than this many metres animate every
+# frame; farther ones with a skippable animation share the per-frame budget.
+# Stock 10 and 4. Tested: 8 and 2.
+npcFullAnimationDistance=stock
+npcAnimationsPerFrame=stock
+
+# Ambient population (stock 9 / 5 / 4 / 3). Not tested through every mission.
+maxSpawn=stock
+maxSpawnCivilians=stock
+maxSpawnParkedVehicles=stock
+maxSpawnVehicles=stock

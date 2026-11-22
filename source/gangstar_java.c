@@ -7,6 +7,7 @@
 #include "gangstar_iap_offline.h"
 #include "gangstar_jni_classes.h"
 #include "gangstar_jni_strings.h"
+#include "gangstar_device_model.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -116,7 +117,7 @@ static jobject object_v(JNIEnv *env, jobject obj, jmethodID id, va_list args) {
     if (!strcmp(m->clazz, "java/util/Locale") && !strcmp(m->name, "getDefault"))
         return (jobject)locale_class;
     const char *value = NULL;
-    if (!strcmp(m->name, "getPhoneModel")) value = "PS Vita";
+    if (!strcmp(m->name, "getPhoneModel")) value = RIO_PHONE_MODEL;
     else if (!strcmp(m->name, "getPhoneManufacturer")) value = "Sony";
     else if (!strcmp(m->name, "getPhoneFW")) value = "4.0.4";
     else if (!strcmp(m->name, "getLocaleCountry")) value = "US";

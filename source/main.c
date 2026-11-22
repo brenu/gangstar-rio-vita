@@ -26,6 +26,7 @@
 #include "gangstar_native_perf.h"
 #include "gangstar_shader_warmup.h"
 #include "gangstar_native_profile.h"
+#include "gangstar_device_model.h"
 
 // The Vita thread reproduces the Activity and GLSurfaceView lifecycle.
 int _newlib_heap_size_user = 256 * 1024 * 1024;
@@ -398,6 +399,13 @@ static int gangstar_main(void) {
             if (hitch_dropped) l_info("RIO_HITCH dropped=%u", hitch_dropped);
             hitch_count = hitch_dropped = 0;
             gangstar_io_report();
+            // AndroidGetDeviceModel calls: one per draw call plus 7 per frame. Each
+            // used to be a JNI round trip; GANGSTAR_DIRECT_DEVICE_MODEL answers it
+            // natively (the counter reads 0 when that option is off).
+            l_info("RIO_DEVICE_MODEL calls=%u frames=%u", gangstar_device_model_calls(), (unsigned)sample.frames);
+#ifdef GANGSTAR_VITA_PERF_PROFILE
+            { void gangstar_vita_profile_report(void); gangstar_vita_profile_report(); }
+#endif
             gangstar_heap_diag_report(frame);
             RioJniStringStats strings=gangstar_jni_strings_stats();
             l_info("RIO_JNI_STRINGS live=%u bytes=%u created=%u destroyed=%u globals=%u pins=%u",

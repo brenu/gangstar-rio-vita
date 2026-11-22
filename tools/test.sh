@@ -225,6 +225,10 @@ python3 tools/test_gangstar_fps_camera.py
 
 python3 tools/test_gangstar_iap_offline.py
 
+cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_vita_profile.c -o work/tests/vita_profile
+work/tests/vita_profile
+python3 tools/test_gangstar_device_model.py
+
 python3 tools/test_gangstar_release.py
 
 python3 tools/test_gangstar_release_routes.py

@@ -101,6 +101,13 @@ Sound should play normally. Left stick moves the character and steers; right sti
 
 Streaming stutters are still a known issue. Please report a crash, missing sound or incorrect graphics rather than treating them as expected first-launch behavior.
 
+## Optional: performance tuning
+
+The game runs with its own performance settings. To experiment with draw distance,
+pedestrian animation or population without rebuilding, copy `extras/perf.cfg.example`
+to `ux0:data/gangstarrio/perf.cfg` and edit the values. Deleting the file, or setting
+`enabled=0`, restores the game's original settings.
+
 ## Updating or testing a fresh install
 
 For a normal update, close the game and install the new VPK. Keep `ux0:/data/gangstarrio/` and your saves.
