@@ -20,6 +20,7 @@ static uintptr_t (*make_memory_file)(uintptr_t,const void*,uint32_t,const char*,
 static int main_thread=1,native_calls,reduced_calls,prefetch_calls,fail_read,fail_factory;
 static const char *path="main.12030.com.gameloft.android.ANMP.GloftG4HM.obb";
 static int gangstar_wait_is_main(void){return main_thread;}
+static void big_open_trace(uintptr_t f,const RioPakEntry *e){(void)f;(void)e;} /* diagnostic only */
 static const char *file_name(uintptr_t p){assert(p);return path;}
 static uintptr_t original(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d){assert(b && !c && d==99);++native_calls;return a;}
 const void *gangstar_texture_original_get(int a,uint64_t b,uint32_t c,const char*d,uint32_t*e){(void)a;(void)b;(void)c;(void)d;(void)e;assert(!"No original lightmap admission");return NULL;}

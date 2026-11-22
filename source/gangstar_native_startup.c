@@ -500,6 +500,35 @@ static uintptr_t probe_17(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 // Never retain native objects, seek them from the worker, or invoke game/GL code there.
 static uintptr_t direct_file_vtable;
 static uintptr_t (*make_memory_file)(uintptr_t, const void *, uint32_t, const char *, int);
+#ifndef GANGSTAR_RELEASE_BUILD
+// Diagnostic: name every large archive entry the frame thread opens, with a
+// per-name open count, so repeated multi-hundred-KiB reads can be identified.
+#define RIO_BIG_OPEN_MIN (256u * 1024u)
+static unsigned reuse_frame; // frame number, defined with the reuse history below
+static struct { char name[96]; unsigned size, opens; } big_opens[128];
+static unsigned big_open_count, big_open_logged;
+static void big_open_trace(uintptr_t file, const RioPakEntry *entry) {
+    // Startup loading alone used most of a 600-line budget; count only from
+    // frame 300 on so the lines describe gameplay.
+    if (!entry->name || entry->size < RIO_BIG_OPEN_MIN || reuse_frame < 300 || big_open_logged >= 600) return;
+    uintptr_t *vtable = *(uintptr_t **)file;
+    const char *path = ((const char *(*)(uintptr_t))vtable[0x28 / 4])(file);
+    const char *base = path ? strrchr(path, '/') : NULL; base = base ? base + 1 : path;
+    unsigned archive = base && !strncmp(base, "patch.", 6) ? 1 : 0, opens = 1, i;
+    for (i = 0; i < big_open_count; ++i)
+        if (big_opens[i].size == entry->size && !strncmp(big_opens[i].name, entry->name, sizeof(big_opens[i].name) - 1)) {
+            opens = ++big_opens[i].opens; break;
+        }
+    if (i == big_open_count && big_open_count < 128) {
+        snprintf(big_opens[i].name, sizeof(big_opens[i].name), "%s", entry->name);
+        big_opens[i].size = entry->size; big_opens[i].opens = 1; ++big_open_count;
+    }
+    ++big_open_logged;
+    l_info("RIO_BIG_OPEN frame=%u archive=%u offset=%u bytes=%u opens=%u extra=0x%x name=%s",
+        reuse_frame, archive, (unsigned)entry->offset, (unsigned)entry->size, opens,
+        (unsigned)entry->extra, entry->name);
+}
+#endif
 static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 #if defined(GANGSTAR_ASSET_PREFETCH) || defined(GANGSTAR_SMALL_LIGHTMAPS)
     int main = gangstar_wait_is_main();
@@ -513,6 +542,9 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
             !((last - first) & 15) && c < (last - first) / 16) {
             const RioPakEntry *entry = (const RioPakEntry *)(first + c * 16);
             const char *name = entry->name;
+#ifndef GANGSTAR_RELEASE_BUILD
+            if (main) big_open_trace(file, entry);
+#endif
             // Image-loader tasks also open these immutable entries. Only the
             // exact car allowlist may use owned reduced readers off-thread;
             // world caches and prefetch admission remain on the frame thread.

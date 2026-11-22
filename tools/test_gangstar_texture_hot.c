@@ -17,6 +17,7 @@ static void policy(void) {
     static RioHotCache c;
     RioHotKey a = {0, 1000, 174904}, b = {0, 2000, 174904}, other_archive = {1, 1000, 174904};
     assert(!rio_hot_eligible(2872) && !rio_hot_eligible(2796344) && rio_hot_eligible(174904));
+    assert(rio_hot_eligible(1048620) && !rio_hot_eligible(RIO_HOT_MAX_BYTES + 1));
     assert(!rio_hot_note_open(&c, a));                     // first open only records
     assert(rio_hot_note_open(&c, a));                      // second open admits
     assert(!rio_hot_note_open(&c, other_archive));         // archive is part of the key

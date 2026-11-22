@@ -20,7 +20,7 @@
 #define RIO_HOT_SLOTS 192u
 #define RIO_HOT_SEEN 512u
 #define RIO_HOT_MIN_BYTES (64u * 1024u)
-#define RIO_HOT_MAX_BYTES (512u * 1024u)
+#define RIO_HOT_MAX_BYTES (1152u * 1024u) /* patch exterior_favela_alpha.tga is 1048620 */
 #define RIO_HOT_HEAP_WATERMARK (176u * 1024u * 1024u)
 typedef struct { int archive; uint64_t offset; uint32_t size; } RioHotKey;
 typedef struct { RioHotKey key; void *data; uint64_t age; } RioHotEntry;
