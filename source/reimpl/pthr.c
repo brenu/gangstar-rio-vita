@@ -92,7 +92,7 @@ PTHR_INLINE int _attr_t_static_init(pthread_attr_t_bionic * attr) {
         if (result != 0) { free(real); return result; }
         // pthread-embedded defaults to 4 KiB for an initialized attr object.
         // Android code expects substantially more, especially libcurl's
-        // formatting frames. Hardware core 1792908326 overflowed that stack.
+        // formatting frames, which overflow it.
         result = pthread_attr_setstacksize(real, 512 * 1024);
         if (result != 0) { pthread_attr_destroy(real); free(real); return result; }
         attr->real_ptr = real;
@@ -102,9 +102,8 @@ PTHR_INLINE int _attr_t_static_init(pthread_attr_t_bionic * attr) {
 }
 
 // null check for `mutex` param must be performed before this, `attr` is fine as null
-// Every native lock/unlock/signal used to take registry_lock just to confirm
-// the object was initialized: one global lock serializing all threads. Once
-// an object is registered (real_ptr published before its slot), skip it.
+// Registered objects (real_ptr published before its slot) skip registry_lock,
+// so native lock/unlock/signal calls don't serialize on one global lock.
 PTHR_INLINE int _sync_known(const void *object, const void *real) {
     return (uintptr_t)real > 0xffff && gangstar_object_contains_unlocked(&initialized_objects, object);
 }

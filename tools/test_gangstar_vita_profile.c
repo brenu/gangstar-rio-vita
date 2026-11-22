@@ -33,7 +33,7 @@ int main(void) {
     assert(rio_profile_apply(p, &s, before, after) == 0 && !memcmp(p, reference, sizeof(p)));
     assert(before[index_of("farPlaneHighResDist")] == 13000 && after[index_of("farPlaneHighResDist")] == 13000);
 
-    /* The values tested on hardware: only those fields change, nothing else is
+    /* Reduced values: only those fields change, nothing else is
        touched, and applying again is idempotent. */
     parse(&s, "farPlaneHighResDist=11000\nnpcFullAnimationDistance=8\nnpcAnimationsPerFrame=2\n");
     assert(!s.errors && rio_profile_apply(p, &s, NULL, NULL) == 3);

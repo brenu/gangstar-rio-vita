@@ -6,12 +6,9 @@
  * _packRes/PhonePerformanceProfiles.gmap, so the game runs DefaultProfile.
  * DefaultProfile is already a low tier (no post effects, no HD shaders), but
  * the Vita's 444 MHz Cortex-A9 is slower per core than the weakest phones the
- * table was tuned for, and the frame thread is CPU-bound at 28-43 ms.
+ * table was tuned for.
  *
- * Built-in defaults change nothing: on hardware (22 Nov 2026) the engine used
- * these values (farPlaneHighResDist 11000, NPC budget 2 / 8 m) but frame time
- * did not change measurably, so the stock look is kept. perf.cfg can still set
- * any field for experiments.
+ * Built-in defaults change nothing; perf.cfg can override any field below.
  *
  * Every field below is read live by the engine from the selected profile, so
  * changing it once, right after profile selection, is enough. Offsets are from

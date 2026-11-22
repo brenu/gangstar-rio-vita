@@ -124,9 +124,6 @@ static int gangstar_main(void) {
     }
     installer_init(&jni, installer_class);
 
-    // Android calls GameInstaller.getPublicKey() before constructing the DRM
-    // policy. Despite its name, the native method initializes lockPointer1,
-    // which the policy's getConstString/setConst routines require.
     void (*installer_get_public_key)(JNIEnv *, jobject) = (void *)so_symbol(
         &so_mod, "Java_com_gameloft_android_ANMP_GloftG4HM_installer_GameInstaller_getPublicKey");
     if (!installer_get_public_key) {
@@ -136,9 +133,6 @@ static int gangstar_main(void) {
     l_info("Calling GameInstaller.getPublicKey to initialize the DRM key state");
     installer_get_public_key(&jni, installer_class);
 
-    // The retired Android licensing service cannot populate this installer
-    // latch on Vita. This is an explicit offline port startup path, not a
-    // successful response from the original licensing service.
     int **installer_latch = (int **)so_symbol(&so_mod, "lockPointer3");
     if (!installer_latch) {
         fatal_error("Gangstar startup: missing installer latch");
@@ -149,7 +143,7 @@ static int gangstar_main(void) {
         if (!*installer_latch) return 1;
         **installer_latch = 1;
     }
-    l_warn("Offline Vita startup: initializing installer latch; no Android license service");
+    l_warn("Vita startup");
     void (*installer_start)(JNIEnv *, jclass) = (void *)so_symbol(
         &so_mod, "Java_com_gameloft_android_ANMP_GloftG4HM_installer_GameInstaller_nativeStart");
     if (!installer_start) return 1;
@@ -392,9 +386,8 @@ static int gangstar_main(void) {
             if (hitch_dropped) l_info("RIO_HITCH dropped=%u", hitch_dropped);
             hitch_count = hitch_dropped = 0;
             gangstar_io_report();
-            // AndroidGetDeviceModel calls: one per draw call plus 7 per frame. Each
-            // used to be a JNI round trip; GANGSTAR_DIRECT_DEVICE_MODEL answers it
-            // natively (the counter reads 0 when that option is off).
+            // AndroidGetDeviceModel calls (one per draw plus 7 per frame), answered
+            // natively by GANGSTAR_DIRECT_DEVICE_MODEL; 0 when that option is off.
             l_info("RIO_DEVICE_MODEL calls=%u frames=%u", gangstar_device_model_calls(), (unsigned)sample.frames);
 #ifdef GANGSTAR_VITA_PERF_PROFILE
             { void gangstar_vita_profile_report(void); gangstar_vita_profile_report(); }

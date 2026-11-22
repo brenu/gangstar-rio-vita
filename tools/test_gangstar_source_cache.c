@@ -23,7 +23,7 @@ int main(void) {
  assert(rio_source_store(&c,a,bytes,4,8));
  rio_source_find(&c,a)->priority=4;
  assert(rio_source_store(&c,b,bytes,4,8));assert(rio_source_store(&c,d,bytes,4,8));
- assert(rio_source_find(&c,a) && !rio_source_find(&c,b)); // district priority beats newer LRU age
+ assert(rio_source_find(&c,a) && !rio_source_find(&c,b)); // higher priority beats newer LRU age
  rio_source_trim(&c,0);
  fail_next=1;assert(!rio_source_store(&c,a,bytes,4,8) && !c.bytes);
  assert(!rio_source_store(&c,a,bytes,4,3));

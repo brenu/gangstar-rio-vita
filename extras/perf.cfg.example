@@ -2,6 +2,10 @@
 # Copy to ux0:data/gangstarrio/perf.cfg and edit. Missing file = the game's own
 # DefaultProfile, unchanged. One key=value per line; '#' starts a comment;
 # "stock" keeps the game's value.
+#
+# Nothing is changed by default. Lower values (farPlaneHighResDist 11000,
+# NPC budget 2 / 8 m) were applied by the engine but made no measurable
+# difference to frame time.
 
 # 0 ignores every line below.
 enabled=1
@@ -13,7 +17,7 @@ farPlaneLowResDist=stock
 
 # NPC animation round robin: NPCs nearer than this many metres animate every
 # frame; farther ones with a skippable animation share the per-frame budget.
-# Stock 10 and 4. Tested: 8 and 2.
+# Stock 10 and 4.
 npcFullAnimationDistance=stock
 npcAnimationsPerFrame=stock
 

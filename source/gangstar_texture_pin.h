@@ -25,9 +25,9 @@ static const char *const rio_texture_pin_names[] = {
     "southfavela_merged_atlas_exported_alpha_atlas2_alpha.tga"
 };
 #define RIO_TEXTURE_PIN_TARGETS (sizeof(rio_texture_pin_names)/sizeof(rio_texture_pin_names[0]))
-// Police/poor car damage maps are freed whenever those cars despawn and were
-// re-read, re-reduced and re-uploaded on the frame thread 14-28 times in two
-// minutes of driving (70-100 ms each). Retained once seen; not prewarmed.
+// Police/poor car damage maps are freed whenever those cars despawn, then
+// re-read, re-reduced and re-uploaded on the frame thread when they respawn.
+// Retained once seen; not prewarmed.
 // Only the reduced 1024 chain (GANGSTAR_CAR_TEXTURE_LOD) qualifies.
 static const char *const rio_texture_pin_car_names[] = {
     "car_cops_texture_damage_d.tga",

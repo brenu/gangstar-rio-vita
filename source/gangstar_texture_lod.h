@@ -174,7 +174,7 @@ static inline int rio_lod_plan_named(const unsigned char *h,size_t size,RioTextu
 static inline int rio_lod_original_source(const char *name) {
     return rio_lod_lightmap_name(name);
 }
-// Restore the measured 243-source preload set. Other lightmaps remain eligible
+// Fixed startup preload set (243 sources). Other lightmaps remain eligible
 // for demand caching without forcing all districts into memory at startup.
 static inline int rio_lod_preload_source(const char *name) {
     if (rio_lod_car_name(name)) return 0;
@@ -186,7 +186,7 @@ static inline int rio_lod_preload_source(const char *name) {
         !strcmp(base,"sugarloaf_lightmap00.tga") ||
         !strcmp(base,"mountain_lightmap00.tga");
 }
-// Observed first-use hitch sources, in priority order. Loaded only after the
+// Lightmaps that otherwise hitch on first use, in priority order. Loaded after the
 // fixed startup set, using demand admission so they cannot displace that set.
 static const char *const rio_lod_supplemental_sources[]={
     "downtown_00_lightmap00.tga", "downtown_01_lightmap00.tga",

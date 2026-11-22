@@ -193,8 +193,8 @@ int main(int argc, char **argv) {
         assert(!gangstar_lightmap_read_range(100,NULL,0,1));
         assert(reads==before);
         fail_tail=1;assert(!gangstar_lightmap_read_range(100,tail,2785408u,sizeof(tail)));fail_tail=0;
-        // Queued worker admission works without district priorities, retains
-        // independent native readers and leaves fixed startup sources intact.
+        // Queued worker admission retains independent native readers and
+        // leaves fixed startup sources intact.
         before=reads;
         assert(gangstar_texture_source_prepare(408000100,2796344,"copacabana_lightmap00.tga"));
         assert(reads>before && gangstar_texture_source_cached(408000100,2796344));

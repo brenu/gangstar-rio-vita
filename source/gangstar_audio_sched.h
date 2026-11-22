@@ -1,6 +1,6 @@
 #ifndef GANGSTAR_AUDIO_SCHED_H
 #define GANGSTAR_AUDIO_SCHED_H
-/* Scoped experiment: only the observed 191-priority emitter worker qualifies. */
+/* Only the 191-priority emitter worker qualifies. */
 typedef struct { int original,changed,error; } RioAudioSchedule;
 typedef struct { int (*get)(void *);int (*set)(void *,int);void *context; } RioAudioScheduleOps;
 static inline RioAudioSchedule rio_audio_schedule_begin(const RioAudioScheduleOps *ops) {
