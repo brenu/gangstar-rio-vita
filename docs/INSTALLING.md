@@ -89,7 +89,7 @@ Copy the **contents** of the prepared `gangstarrio` folder into that directory. 
 
 ## 4. Install the VPK
 
-Copy `work/build/gangstar_rio_wip.vpk` from your computer to the Vita, for example to `ux0:/data/`. In VitaShell, select the VPK, press X and follow the installation prompts.
+Copy the VPK file from your computer to the Vita (`work/build/gangstar_rio_wip.vpk` if you built it manually), for example to `ux0:/data/`. In VitaShell, select the VPK, press X and follow the installation prompts.
 
 The application title is **Gangstar Rio** and its title ID is `G4HM00001`. Once installation finishes, launch its bubble from the home screen.
 
