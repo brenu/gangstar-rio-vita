@@ -16,7 +16,7 @@
 extern so_module so_mod;
 static float sticks[2][2], camera_remainder[2];
 static uint64_t last_poll;
-static int walking, steering, last_mode;
+static int walking, steering, last_mode, last_jetpack;
 #define RIO_RIGHT_STICK_CAMERA 1
 static int camera_active;
 static int accelerating, braking;
@@ -293,7 +293,7 @@ void gangstar_controls_poll(void) {
     float seconds = last_poll ? (now - last_poll) / 1000000.0f : 1.0f / 60.0f;
     last_poll = now;
     unsigned char *hud = NULL;
-    int mode = 0;
+    int mode = 0, jetpack = 0;
     recovering=0;
     if (game_loaded() && in_game()) {
         hud = hud_instance();
@@ -312,6 +312,13 @@ void gangstar_controls_poll(void) {
             mode = hud_flying(hud) ? 3 : *(void **)(hud + 4) == *(void **)(hud + 12) ? 2 : 1;
     }
     if(recovering)mode=0; // Recovery accepts only Triangle; other controls remain cancelled.
+    // CHudManager::jetpacking makes the jetpack HUD (+0x1c) the active one (+4).
+    // Its stick and buttons use the on-foot events.
+    jetpack = mode == 1 && *(void **)(hud + 4) == *(void **)(hud + 0x1c);
+    if (jetpack != last_jetpack) {
+        l_info("Gangstar jetpack HUD: %s", jetpack ? "active" : "inactive");
+        last_jetpack = jetpack;
+    }
     if (mode != last_mode) {
         // Repeat neutral after becoming active: a release sent while the
         // original control manager was locked may have been ignored.
@@ -332,7 +339,9 @@ void gangstar_controls_poll(void) {
         last_mode = mode;
     }
     unsigned physical=action_buttons();
+    unsigned was_held=actions.held;
     rio_pad_actions(&actions,mode==3?2:mode,physical,send_button,NULL);
+    if (jetpack) rio_jetpack_sprint(&actions,was_held,send_button,NULL);
     rio_pad_actions(&recovery_actions,recovering?1:0,physical&RIO_TRIANGLE,send_recovery_button,NULL);
     if (!mode) return;
     float x = sticks[0][0], y = sticks[0][1];

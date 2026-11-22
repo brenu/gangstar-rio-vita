@@ -76,5 +76,22 @@ int main(void){
  rio_pad_actions(&resume,1,0,emit,0);
  assert(count==2 && states[0]==3 && states[1]==3);
  reset();rio_pad_actions(&resume,1,0,emit,0);assert(!count);
- puts("Button actions: native states, sprint, Square-only attack, context cancellation, held-input blocking, enter car, weapon/map/cover release, nitro and pedal isolation passed");
+ // Jetpack: Sprint held is repeated every frame after the press, then released.
+ RioPadActions jet={0};reset();unsigned was;
+ was=jet.held;rio_pad_actions(&jet,1,0,emit,0);rio_jetpack_sprint(&jet,was,emit,0);assert(!count);
+ was=jet.held;rio_pad_actions(&jet,1,RIO_CROSS,emit,0);rio_jetpack_sprint(&jet,was,emit,0);
+ assert(count==1&&types[0]==26&&states[0]==1);
+ for(int f=0;f<3;++f){was=jet.held;rio_pad_actions(&jet,1,RIO_CROSS,emit,0);rio_jetpack_sprint(&jet,was,emit,0);}
+ assert(count==4&&types[3]==26&&states[1]==1&&states[2]==1&&states[3]==1);
+ was=jet.held;rio_pad_actions(&jet,1,0,emit,0);rio_jetpack_sprint(&jet,was,emit,0);
+ assert(count==5&&types[4]==26&&states[4]==2);
+ was=jet.held;rio_pad_actions(&jet,1,0,emit,0);rio_jetpack_sprint(&jet,was,emit,0);assert(count==5);
+ // Driving never repeats; a Cross held across a HUD change stays blocked.
+ reset();RioPadActions car={0};rio_pad_actions(&car,2,0,emit,0);
+ for(int f=0;f<3;++f){was=car.held;rio_pad_actions(&car,2,RIO_CROSS,emit,0);rio_jetpack_sprint(&car,was,emit,0);}
+ assert(!count);
+ was=car.held;rio_pad_actions(&car,1,RIO_CROSS,emit,0);rio_jetpack_sprint(&car,was,emit,0);
+ was=car.held;rio_pad_actions(&car,1,RIO_CROSS,emit,0);rio_jetpack_sprint(&car,was,emit,0);
+ for(unsigned i=0;i<count;++i)assert(!(types[i]==26&&states[i]==1));
+ puts("Button actions: native states, sprint, Square-only attack, context cancellation, held-input blocking, enter car, weapon/map/cover release, nitro and pedal isolation, jetpack held Sprint passed");
 }

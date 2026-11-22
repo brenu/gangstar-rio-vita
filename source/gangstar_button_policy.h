@@ -73,4 +73,11 @@ static inline void rio_pad_actions(RioPadActions *p, int mode, unsigned buttons,
   if(down)p->held|=1u<<i;else p->held&=~(1u<<i);
  }
 }
+// Jetpack::step clears the boost after every physics step, so the jetpack HUD
+// needs Sprint (26) reported as held on every frame Cross stays down, not only
+// on the press. was_held is p->held from before this frame's rio_pad_actions.
+static inline void rio_jetpack_sprint(const RioPadActions *p, unsigned was_held,
+ RioButtonEmit emit, void *context) {
+ if(p->mode==1 && (was_held & p->held & 1u))emit(context,26,1);
+}
 #endif
