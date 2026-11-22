@@ -1,6 +1,7 @@
 #ifndef GANGSTAR_TEXTURE_PIN_H
 #define GANGSTAR_TEXTURE_PIN_H
-#include "gangstar_resident_policy.h"
+#include <stdint.h>
+#include <string.h>
 // 16 city atlases (~2.7 MiB) plus 4 reduced car-damage textures (~2.7 MiB).
 #define RIO_TEXTURE_PIN_LIMIT (6u * 1024 * 1024)
 typedef struct { uintptr_t object; unsigned bytes; char name[96]; } RioTexturePin;

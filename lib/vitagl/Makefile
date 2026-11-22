@@ -311,10 +311,6 @@ samples: $(SAMPLES)
 
 source/textures.o: source/utils/alpha_overwrite.h
 
-ifeq ($(RIO_VERTEX_PATCH_CACHE),1)
-CFLAGS += -DRIO_VERTEX_PATCH_CACHE
-endif
-
 ifeq ($(RIO_VERTEX_RANGE_COPY),1)
 CFLAGS += -DRIO_VERTEX_RANGE_COPY
 endif

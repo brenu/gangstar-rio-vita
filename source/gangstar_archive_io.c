@@ -1,7 +1,6 @@
 #include "gangstar_audio_probe.h"
 #include "gangstar_storage_trace.h"
 #include "gangstar_archive_cache.h"
-#include "gangstar_prefetch_policy.h"
 #include "utils/logger.h"
 #include <psp2/kernel/sysmem.h>
 #include <unistd.h>
@@ -108,40 +107,11 @@ static RioArchiveCache cache;
 static atomic_int enabled;
 static atomic_uint active_demand;
 int gangstar_archive_demand_busy(void) {return atomic_load(&active_demand)!=0;}
-static void prefetch_init(void);
-static void prefetch_enqueue(int archive, uint64_t offset);
 static const uint64_t archive_sizes[] = {UINT64_C(2119380688), UINT64_C(3709754)};
 static const char *archive_paths[] = {
     "ux0:/data/gangstarrio/main.12030.com.gameloft.android.ANMP.GloftG4HM.obb",
     "ux0:/data/gangstarrio/patch.12136.com.gameloft.android.ANMP.GloftG4HM.obb"
 };
-#if defined(__vita__) && defined(GANGSTAR_NATIVE_ARCHIVE_IO)
-static int native_fds[] = {-1, -1};
-static atomic_uint native_calls, native_bytes, native_fallbacks;
-static void native_backend_init(void) {
-    for (unsigned archive = 0; archive < 2; ++archive) {
-        int native = sceIoOpen(archive_paths[archive], SCE_O_RDONLY, 0);
-        int original = open(archive_paths[archive], O_RDONLY);
-        SceIoStat st;
-        int valid = native >= 0 && original >= 0 &&
-            sceIoGetstatByFd(native, &st) >= 0 && (uint64_t)st.st_size == archive_sizes[archive];
-        const uint64_t offsets[] = {0, RIO_CACHE_BLOCK_SIZE - 17, archive_sizes[archive] - 64};
-        unsigned char expected[64], actual[64];
-        for (unsigned i = 0; valid && i < 3; ++i) {
-            valid = pread(original, expected, sizeof(expected), offsets[i]) == sizeof(expected) &&
-                sceIoPread(native, actual, sizeof(actual), offsets[i]) == sizeof(actual) &&
-                !memcmp(expected, actual, sizeof(actual));
-        }
-        if (original >= 0) close(original);
-        if (valid) native_fds[archive] = native; // process-lifetime positional handle
-        else if (native >= 0) sceIoClose(native);
-        l_info("Gangstar archive backend: archive=%u native=%d parity=%s", archive,
-            native_fds[archive], valid ? "passed" : "failed; using newlib");
-    }
-}
-#else
-static void native_backend_init(void) { (void)archive_paths; }
-#endif
 // Vita newlib has 256 logical descriptors; many can share one kernel handle.
 enum { MAX_HANDLES = 256 };
 static int shared_roots[2]={-1,-1};
@@ -154,7 +124,6 @@ static struct Handle {
     FILE *stream;
     off_t known_offset;
     int offset_valid,exposed,dirty;
-    RioPrefetchPolicy prediction;
     pthread_mutex_t position;
 } handles[MAX_HANDLES];
 static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -209,12 +178,10 @@ void gangstar_archive_init(void) {
         pthread_cond_destroy(&cache.changed);
         pthread_mutex_destroy(&cache.lock); sceKernelFreeMemBlock(block); return;
     }
-    native_backend_init();
     enabled = 1;
     l_info("Gangstar shared archive cache: %u MiB, %u x %u KiB, stdio and descriptor reads",
         (unsigned)(cache.block_count * RIO_CACHE_BLOCK_SIZE / (1024 * 1024)),
         cache.block_count, (unsigned)(RIO_CACHE_BLOCK_SIZE / 1024));
-    prefetch_init();
 }
 
 void gangstar_archive_track(int fd, const char *path, int flags) {
@@ -238,7 +205,6 @@ void gangstar_archive_track(int fd, const char *path, int flags) {
         handles[i].stream = NULL;
         handles[i].offset_valid=handles[i].exposed=handles[i].dirty=0;
         handles[i].known_offset=0;
-        rio_prefetch_reset(&handles[i].prediction);
         handles[i].fd = fd;
         break; // table full: retain normal I/O for that descriptor
     }
@@ -304,22 +270,7 @@ static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t o
 #ifdef GANGSTAR_STORAGE_TRACE
     rio_storage_locked(&storage);
 #endif
-#if defined(__vita__) && defined(GANGSTAR_NATIVE_ARCHIVE_IO)
-    int native = native_fds[io->archive];
-    if (native >= 0) {
-        result = sceIoPread(native, buffer, size, offset);
-        atomic_fetch_add(&native_calls, 1);
-        if (result > 0) atomic_fetch_add(&native_bytes, (unsigned)result);
-        else {
-            // Preserve POSIX errors and a usable fallback without treating a
-            // native SceUID as a newlib descriptor (or vice versa).
-            atomic_fetch_add(&native_fallbacks, 1);
-            result = pread(io->fd, buffer, size, (off_t)offset);
-        }
-    } else result = pread(io->fd, buffer, size, (off_t)offset);
-#else
     result = pread(io->fd, buffer, size, (off_t)offset);
-#endif
     int saved_errno = errno;
     pthread_mutex_unlock(&physical_lock[io->archive]);
 #ifdef GANGSTAR_STORAGE_TRACE
@@ -335,142 +286,6 @@ static ssize_t backing_read(void *context, void *buffer, size_t size, uint64_t o
     }
     errno = saved_errno;
     return result;
-}
-
-#ifdef __vita__
-static struct { int archive; uint64_t offset, end; } prefetch_jobs[4];
-static unsigned prefetch_count;
-static pthread_mutex_t prefetch_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t prefetch_changed = PTHREAD_COND_INITIALIZER;
-static atomic_int prefetch_ready;
-static atomic_uint pf_queued, pf_done, pf_skipped, pf_errors, pf_bytes, pf_us;
-static int cache_contains(int archive, uint64_t offset) {
-    int found = 0;
-    pthread_mutex_lock(&cache.lock);
-    for (unsigned i = 0; i < cache.block_count; ++i) {
-        RioArchiveBlock *b = &cache.blocks[i];
-        if ((b->valid || b->loading) && b->archive == archive && b->offset == offset) {
-            found = 1; break;
-        }
-    }
-    pthread_mutex_unlock(&cache.lock);
-    return found;
-}
-static void *prefetch_worker(void *unused) {
-    (void)unused;
-    sceKernelChangeThreadPriority(0, 191);
-    const char *paths[] = {
-        "ux0:/data/gangstarrio/main.12030.com.gameloft.android.ANMP.GloftG4HM.obb",
-        "ux0:/data/gangstarrio/patch.12136.com.gameloft.android.ANMP.GloftG4HM.obb"
-    };
-    int fds[] = {-1, -1}; // Private descriptors live until process exit.
-    for (;;) {
-        pthread_mutex_lock(&prefetch_lock);
-        while (!prefetch_count) pthread_cond_wait(&prefetch_changed, &prefetch_lock);
-        pthread_mutex_unlock(&prefetch_lock);
-        // Do not start speculative I/O while a foreground archive call is active.
-        // An already submitted read is allowed to finish; at most one block.
-        if (atomic_load(&active_demand)) { sceKernelDelayThread(1000); continue; }
-        pthread_mutex_lock(&prefetch_lock);
-        int archive = prefetch_jobs[0].archive;
-        uint64_t offset = prefetch_jobs[0].offset;
-        if (!rio_prefetch_advance(&prefetch_jobs[0].offset, prefetch_jobs[0].end, RIO_CACHE_BLOCK_SIZE)) {
-            --prefetch_count;
-            memmove(prefetch_jobs, prefetch_jobs + 1, prefetch_count * sizeof(*prefetch_jobs));
-        }
-        pthread_mutex_unlock(&prefetch_lock);
-        if (cache_contains(archive, offset)) { atomic_fetch_add(&pf_skipped, 1); continue; }
-        if (fds[archive] == -1) {
-            fds[archive] = open(paths[archive], O_RDONLY);
-            struct stat st;
-            if (fds[archive] < 0 || fstat(fds[archive], &st) ||
-                (uint64_t)st.st_size != archive_sizes[archive]) {
-                if (fds[archive] >= 0) close(fds[archive]);
-                fds[archive] = -2;
-            }
-        }
-        if (fds[archive] < 0) { atomic_fetch_add(&pf_errors, 1); continue; }
-        struct BackingContext context = {.fd = fds[archive], .tracing = 1, .archive = archive};
-        unsigned char byte;
-        ssize_t result = rio_archive_cache_read(&cache, archive, archive_sizes[archive],
-            &byte, 1, offset, backing_read, &context);
-        atomic_fetch_add(result == 1 ? &pf_done : &pf_errors, 1);
-        atomic_fetch_add(&pf_bytes, (unsigned)context.disk_bytes);
-        atomic_fetch_add(&pf_us, (unsigned)context.disk_us);
-    }
-    return NULL;
-}
-static void prefetch_init(void) {
-#if defined(GANGSTAR_DISABLE_PREFETCH) && !defined(GANGSTAR_ASSET_PREFETCH)
-    l_info("Gangstar archive prefetch disabled");
-    return;
-#endif
-    pthread_attr_t attr;
-    if (pthread_attr_init(&attr)) return;
-    pthread_t worker;
-    int error = pthread_attr_setstacksize(&attr, 512 * 1024);
-    if (!error) error = pthread_create(&worker, &attr, prefetch_worker, NULL);
-    pthread_attr_destroy(&attr);
-    if (error) { l_warn("Gangstar prefetch unavailable: %d", error); return; }
-    pthread_detach(worker);
-    atomic_store(&prefetch_ready, 1);
-#ifdef GANGSTAR_ASSET_PREFETCH
-    l_info("Gangstar asset prefetch: native texture ranges, four jobs, max 4 MiB each, one block per idle check");
-#endif
-#ifndef GANGSTAR_DISABLE_PREFETCH
-    l_info("Gangstar prefetch: sequential 64 KiB trigger, one-block lookahead, four queued jobs");
-#endif
-}
-static void prefetch_range(int archive, uint64_t offset, uint64_t end) {
-    if (!atomic_load(&prefetch_ready)) return;
-    pthread_mutex_lock(&prefetch_lock);
-    for (unsigned i = 0; i < prefetch_count; ++i)
-        if (prefetch_jobs[i].archive == archive && prefetch_jobs[i].offset <= offset && prefetch_jobs[i].end >= end) {
-            pthread_mutex_unlock(&prefetch_lock); return;
-        }
-    if (prefetch_count == 4) {
-        memmove(prefetch_jobs, prefetch_jobs + 1, 3 * sizeof(*prefetch_jobs));
-        --prefetch_count;
-        atomic_fetch_add(&pf_skipped, 1);
-    }
-    prefetch_jobs[prefetch_count].archive = archive;
-    prefetch_jobs[prefetch_count].offset = offset;
-    prefetch_jobs[prefetch_count++].end = end;
-    atomic_fetch_add(&pf_queued, 1);
-    pthread_cond_signal(&prefetch_changed);
-    pthread_mutex_unlock(&prefetch_lock);
-}
-static void prefetch_enqueue(int archive, uint64_t offset) {
-#ifndef GANGSTAR_DISABLE_PREFETCH
-    prefetch_range(archive, offset, offset + RIO_CACHE_BLOCK_SIZE);
-#else
-    (void)archive; (void)offset;
-#endif
-}
-void gangstar_archive_prefetch_asset(int archive, uint64_t offset, uint64_t size) {
-#ifdef GANGSTAR_ASSET_PREFETCH
-    uint64_t first, end;
-    if (!atomic_load(&enabled) || archive < 0 || archive > 1 ||
-        !rio_prefetch_asset_bounds(offset, size, archive_sizes[archive], RIO_CACHE_BLOCK_SIZE, &first, &end)) return;
-    prefetch_range(archive, first, end);
-#else
-    (void)archive; (void)offset; (void)size;
-#endif
-}
-#else
-void gangstar_archive_prefetch_asset(int archive, uint64_t offset, uint64_t size) {
-    (void)archive; (void)offset; (void)size;
-}
-static void prefetch_init(void) {}
-static void prefetch_enqueue(int archive, uint64_t offset) { (void)archive; (void)offset; }
-#endif
-
-static void predict_next(struct Handle *h, off_t offset, ssize_t result) {
-    uint64_t next;
-    if (offset < 0 || result <= 0) { rio_prefetch_reset(&h->prediction); return; }
-    if (rio_prefetch_next(&h->prediction, offset, (size_t)result,
-        archive_sizes[h->archive], RIO_CACHE_BLOCK_SIZE, &next))
-        prefetch_enqueue(h->archive, next);
 }
 
 ssize_t gangstar_archive_read(int fd, void *buffer, size_t size) {
@@ -516,7 +331,6 @@ ssize_t gangstar_archive_read(int fd, void *buffer, size_t size) {
         }
     }
     int archive = h->archive;
-    predict_next(h, offset, result);
     atomic_fetch_sub(&active_demand, 1);
     release(h);
     int saved_errno = errno;
@@ -538,7 +352,6 @@ ssize_t gangstar_archive_pread(int fd, void *buffer, size_t size, off_t offset) 
     else result = rio_archive_cache_read(&cache, h->archive, archive_sizes[h->archive],
         buffer, size, (uint64_t)offset, backing_read, &context);
     int archive = h->archive;
-    predict_next(h, offset, result);
     atomic_fetch_sub(&active_demand, 1);
     release(h);
     int saved_errno = errno;
@@ -719,15 +532,4 @@ void gangstar_archive_report(void) {
     }
     if (trace_dropped) { l_info("RIO_ARCHIVE dropped=%u", trace_dropped); }
     trace_count = trace_dropped = 0;
-#if defined(__vita__) && defined(GANGSTAR_NATIVE_ARCHIVE_IO)
-    l_info("RIO_NATIVE_IO calls=%u bytes=%u fallbacks=%u",
-        atomic_exchange(&native_calls, 0), atomic_exchange(&native_bytes, 0),
-        atomic_exchange(&native_fallbacks, 0));
-#endif
-#ifdef __vita__
-    l_info("RIO_PREFETCH queued=%u completed=%u skipped=%u errors=%u disk_bytes=%u disk_us=%u",
-        atomic_exchange(&pf_queued, 0), atomic_exchange(&pf_done, 0),
-        atomic_exchange(&pf_skipped, 0), atomic_exchange(&pf_errors, 0),
-        atomic_exchange(&pf_bytes, 0), atomic_exchange(&pf_us, 0));
-#endif
 }

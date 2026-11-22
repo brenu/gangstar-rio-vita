@@ -11,18 +11,6 @@
 static unsigned char header[128];
 static unsigned reads, read_bytes;
 static int corrupt, fail_tail, interrupt_once, original_mode;
-#ifdef GANGSTAR_LIGHTMAP_PACK
-static int pack_mode;
-int gangstar_lightmap_pack_read(uint32_t offset,uint32_t size,void *data) {
-    (void)offset;
-    if(!pack_mode)return 0;
-    memset(data,0xee,size);
-    if(pack_mode==2)return 0; // Failed decode may have overwritten even the header.
-    memcpy(data,header,128);
-    for(unsigned i=128;i<size;++i)((unsigned char *)data)[i]=i&255;
-    return 1;
-}
-#endif
 int __wrap_open(const char *name, int flags, ...) { assert(strstr(name, "main.12030") && flags == O_RDONLY); return 99; }
 int __wrap_fstat(int fd, struct stat *st) { assert(fd == 99); memset(st, 0, sizeof(*st)); st->st_size = 2119380688; return 0; }
 void gangstar_archive_track(int fd, const char *name, int flags) { assert(fd == 99 && strstr(name, ".obb") && flags == O_RDONLY); }
@@ -173,15 +161,12 @@ int main(int argc, char **argv) {
         before=reads;
         const void *demand=gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length);
         assert(demand && reads>before);free((void *)demand);
-        RioTextureSourcePriority wanted={12000100,2796344,1,4};
-        gangstar_texture_source_priorities(&wanted,1);
-        assert(gangstar_texture_source_background(12000100,2796344,"copacabana_lightmap00.tga"));
+        assert(gangstar_texture_source_prepare(12000100,2796344,"copacabana_lightmap00.tga"));
         before=reads;
         const void *prefetched=gangstar_texture_original_get(0,12000100,2796344,"copacabana_lightmap00.tga",&length);
         assert(prefetched && reads==before);free((void *)prefetched);
         pthread_t readers[2];
         for(unsigned i=0;i<2;++i)assert(!pthread_create(&readers[i],NULL,cached_reader,NULL));
-        for(unsigned i=0;i<32;++i)gangstar_texture_source_priorities(&wanted,1);
         for(unsigned i=0;i<2;++i)assert(!pthread_join(readers[i],NULL));
         assert(reads==before);
         // Fill spare space, then rotate demand maps without losing fixed assets.
@@ -222,18 +207,6 @@ int main(int argc, char **argv) {
         prepared=gangstar_texture_original_get(0,100,2796344,"rich_00_lightmap00.tga",&length);
         assert(prepared && reads==before);free((void *)prepared);
         assert(!gangstar_texture_source_prepare(412000100,2796344,"huds.bmp"));
-#ifdef GANGSTAR_LIGHTMAP_PACK
-        pack_mode=1;before=read_bytes;
-        const unsigned char *packed=gangstar_texture_original_get(0,400000100,2796344,"copacabana_lightmap00.tga",&length);
-        assert(packed && read_bytes==before+128 && !memcmp(packed,header,128));
-        for(unsigned i=128;i<length;++i)assert(packed[i]==(i&255));
-        free((void *)packed);
-        pack_mode=2;before=read_bytes;
-        packed=gangstar_texture_original_get(0,404000100,2796344,"copacabana_lightmap00.tga",&length);
-        assert(packed && read_bytes==before+2796344 && !memcmp(packed,header,128));
-        for(unsigned i=128;i<length;++i)assert(packed[i]==(i&255));
-        free((void *)packed);
-#endif
         puts("Original lightmap readers: byte identity, independent ownership, exact families, interrupted/short reads and failed-fill fallback passed");
         return 0;
     }

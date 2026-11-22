@@ -5,7 +5,6 @@
 #include "reimpl/pthr.h"
 #endif
 #include "gangstar_registration_profile.h"
-#include "gangstar_audio_poll.h"
 #include "gangstar_phase_timing.h"
 #include "gangstar_render_sample.h"
 #include "gangstar_startup_trampoline.h"
@@ -31,9 +30,7 @@ void gangstar_texture_hot_preloading(int on);
 #include "gangstar_texture_hot_preload.h"
 #endif
 #include "gangstar_district_manifest.h"
-#include "gangstar_district_preload.h"
 #include "gangstar_asset_perf.h"
-#include "gangstar_resident_policy.h"
 #include "gangstar_texture_identity.h"
 #include "gangstar_texture_pin.h"
 #include "gangstar_stream_guard.h"
@@ -496,7 +493,7 @@ static uintptr_t probe_17(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 #endif
     return probes[17].original(a, b, c, d);
 }
-// Enqueue only immutable texture entries backed directly by an original OBB.
+// Serve only immutable texture entries backed directly by an original OBB.
 // Never retain native objects, seek them from the worker, or invoke game/GL code there.
 static uintptr_t direct_file_vtable;
 static uintptr_t (*make_memory_file)(uintptr_t, const void *, uint32_t, const char *, int);
@@ -530,7 +527,7 @@ static void big_open_trace(uintptr_t file, const RioPakEntry *entry) {
 }
 #endif
 static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-#if defined(GANGSTAR_ASSET_PREFETCH) || defined(GANGSTAR_SMALL_LIGHTMAPS)
+#ifdef GANGSTAR_SMALL_LIGHTMAPS
     int main = gangstar_wait_is_main();
 #ifndef GANGSTAR_CAR_TEXTURE_LOD
     if (!main) return probes[20].original(a,b,c,d);
@@ -547,7 +544,7 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 #endif
             // Image-loader tasks also open these immutable entries. Only the
             // exact car allowlist may use owned reduced readers off-thread;
-            // world caches and prefetch admission remain on the frame thread.
+            // world caches remain on the frame thread.
             if (!main && !rio_lod_car_name(name)) return probes[20].original(a,b,c,d);
             size_t n = name ? strnlen(name, 256) : 0;
             if (!(entry->extra & 0x10000) && n >= 4 && n < 256 &&
@@ -591,7 +588,6 @@ static uintptr_t probe_20(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
                             }
                         }
 #endif
-                        if(main)gangstar_archive_prefetch_asset(archive, entry->offset, entry->size);
                     }
                 }
             }
@@ -866,48 +862,7 @@ static uintptr_t probe_21(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
     return result;
 #endif
 }
-#ifdef GANGSTAR_RESIDENT_TEXTURES
-static RioResidentPolicy resident_policy;
-static uintptr_t (*resident_properties)(uintptr_t, unsigned);
-static void (*resident_unbind)(uintptr_t, unsigned, unsigned);
-static unsigned resident_kept, resident_released, resident_passes;
-#endif
 static uintptr_t probe_27(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-#ifdef GANGSTAR_RESIDENT_TEXTURES
-    if (resident_properties && resident_unbind && gangstar_wait_is_main()) {
-        uintptr_t first = *(uintptr_t *)(a + 0xbc), last = *(uintptr_t *)(a + 0xc0);
-        uintptr_t entries = *(uintptr_t *)(a + 0x18), end = *(uintptr_t *)(a + 0x1c);
-        if (last >= first && !((first | last | entries | end) & 3) &&
-            last - first <= 65536 * 4 && (first || last == first) &&
-            end >= entries && !((end - entries) & 7) && end - entries <= 65536 * 8 && (entries || end == entries)) {
-            ++resident_passes;
-            uint64_t free_vram = UINT64_MAX;
-            // Original method only walks this vector and calls unbind(t,6,0).
-            // Keep explicit unload/remove/shutdown paths completely native.
-            for (uintptr_t at = first; at < last; at += 4) {
-                uintptr_t texture = *(uintptr_t *)at;
-                int keep = 0;
-                if (texture) {
-                    unsigned id = *(unsigned short *)(texture + 0x34);
-                    if (id < (end - entries) / 8 && *(uintptr_t *)(entries + id * 8) == texture) {
-                        uintptr_t props = resident_properties(a, id);
-                        const char *name = props ? *(const char **)props : NULL;
-                        if (rio_resident_name(name)) {
-                        if (free_vram == UINT64_MAX) free_vram = vglMemFree(VGL_MEM_VRAM);
-                        keep = rio_resident_keep(&resident_policy, a, texture, name,
-                            *(unsigned *)(texture + 0x18), *(unsigned *)(texture + 0x1c),
-                            (*(unsigned char *)(texture + 0x38) & 0x80) != 0,
-                            (*(unsigned char *)(texture + 0x38) & 8) != 0, free_vram);
-                        }
-                    }
-                }
-                if (keep) ++resident_kept;
-                else { ++resident_released; resident_unbind(texture, 6, 0); }
-            }
-            return 0;
-        }
-    }
-#endif
     return probes[27].original(a, b, c, d);
 }
 static uintptr_t trace_texture_eviction(unsigned probe, unsigned kind, uintptr_t a,
@@ -1001,7 +956,6 @@ static uintptr_t probe_33(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { 
 static uintptr_t probe_34(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) { return pin_clear_call(34,a,b,c,d); }
 #ifdef GANGSTAR_WORLD_SOURCE_PREWARM
 static void preload_world_sources(uintptr_t manager) {
-    if(gangstar_district_start())return;
     if (world_source_preload_done || !world_source_fs_vtable || !world_source_file_release) return;
     // The native getter uses this exact intrusive IFileSystem member. Opening
     // through its virtual API retains the engine's filesystem locking, archive
@@ -1170,7 +1124,6 @@ static int audio_priority_set(void *context,int priority) {
 #endif
 static __attribute__((noinline)) uintptr_t probe_39(uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
     SceUID thread=sceKernelGetThreadId();
-    if (!gangstar_wait_is_main()) gangstar_audio_poll_worker();
 #ifdef GANGSTAR_AUDIO_SCOPED_PRIORITY
     RioAudioScheduleOps scheduling={audio_priority_get,audio_priority_set,(void *)(uintptr_t)thread};
     RioAudioSchedule priority=rio_audio_schedule_begin(&scheduling);
@@ -1879,12 +1832,6 @@ void gangstar_native_reuse_report(void) {
         (unsigned)vglMemFree(VGL_MEM_VRAM), (unsigned)vglMemTotal(VGL_MEM_VRAM),
         (unsigned)vglMemFree(VGL_MEM_RAM), (unsigned)vglMemFree(VGL_MEM_SLOW));
 #endif
-#if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_RESIDENT_TEXTURES)
-    l_info("RIO_RESIDENT passes=%u kept=%u released=%u charged_textures=%u charged_bytes=%u free_vram=%u",
-        resident_passes, resident_kept, resident_released, resident_policy.count, resident_policy.bytes,
-        (unsigned)vglMemFree(VGL_MEM_VRAM));
-    resident_passes = resident_kept = resident_released = 0;
-#endif
 #ifdef GANGSTAR_NATIVE_STARTUP_PROFILE
     for (unsigned i = 0; i < reuse_count; ++i)
         l_info("RIO_REUSE frame=%u occurrence=%u file_bytes=%u texture=%p elapsed_us=%llu texture_calls=%u texture_us=%llu cache_read_us=%llu cache_read_bytes=%llu name=%s",
@@ -2103,7 +2050,6 @@ void gangstar_native_startup_install(void) {
 #if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_ARCHIVE_ROUTE_CACHE)
     install_route_generations();
 #endif
-    gangstar_audio_poll_init(so_mod.load_addr);
 #if defined(GANGSTAR_NATIVE_STARTUP_PROFILE) && defined(GANGSTAR_AUDIO_HALF_CHUNKS)
     chunk_fill=so_symbol(&so_mod,"_ZN3vox22DecoderCursorInterface9DecodeRefERPvi");
     chunk_submit=so_symbol(&so_mod,"_ZThn8_N3vox29DriverCallbackSourceInterface10UploadDataEPvi");
@@ -2147,20 +2093,12 @@ void gangstar_native_startup_install(void) {
     l_info("Gangstar texture ref cache: sixteen selected 512 textures, 3 MiB direct payload limit; ready=%d",
         texture_pin_add_ref != NULL && texture_pin_release_ref != NULL);
 #endif
-#ifdef GANGSTAR_RESIDENT_TEXTURES
-    resident_properties = (void *)so_symbol(&so_mod, "_ZNK6glitch4core6detail15SIDedCollectionIN5boost13intrusive_ptrINS_5video8ITextureEEEtLb0ENS5_6detail14texturemanager18STexturePropertiesENS1_15sidedcollection12SValueTraitsEE13getPropertiesEt");
-    resident_unbind = (void *)so_symbol(&so_mod, "_ZN6glitch5video8ITexture6unbindEjj");
-    l_info("Gangstar ready texture residency: automatic pass only, 8 MiB accounting limit, 8 MiB VRAM reserve; ready=%d",
-        resident_properties != NULL && resident_unbind != NULL);
-#endif
-#if defined(GANGSTAR_ASSET_PREFETCH) || defined(GANGSTAR_SMALL_LIGHTMAPS)
+#ifdef GANGSTAR_SMALL_LIGHTMAPS
     direct_file_vtable = so_symbol(&so_mod, "_ZTVN6glitch2io12CGlfReadFileE");
     if (direct_file_vtable) direct_file_vtable += 8;
-#ifdef GANGSTAR_SMALL_LIGHTMAPS
     make_memory_file = (void *)so_symbol(&so_mod, "_ZN6glitch2io20createMemoryReadFileEPvlPKcb");
     l_info("Gangstar world sources: DDS ETC0 -> %u, native-owned reduced buffers; ready=%d",
         GANGSTAR_TEXTURE_LOD_EDGE, direct_file_vtable != 0 && make_memory_file != NULL);
-#endif
 #endif
 #ifdef GANGSTAR_ARCHIVE_ROUTE_CACHE
     pak_vtable = so_symbol(&so_mod, "_ZTV16CCustomPakReader");

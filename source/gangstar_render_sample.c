@@ -7,7 +7,6 @@
 #ifdef GANGSTAR_DETAILED_RENDER_PROFILE
 #include <psp2/kernel/processmgr.h>
 static struct {uint64_t us,work,worst;unsigned calls,samples;} sample[RIO_RENDER_KINDS];
-extern void vglGetVertexPatchStats(unsigned *,unsigned *) __attribute__((weak));
 extern void vglGetVertexRangeStats(unsigned *,unsigned *,uint64_t *) __attribute__((weak));
 extern void vglGetSelectiveVertexStats(unsigned *,unsigned *,uint64_t *) __attribute__((weak));
 extern void vglGetRejectedDrawSetupStats(unsigned *) __attribute__((weak));
@@ -77,16 +76,12 @@ void gangstar_render_report(void) {
   unsigned draws,trimmed;uint64_t saved;vglGetVertexRangeStats(&draws,&trimmed,&saved);
   l_info("RIO_VERTEX_RANGE draws=%u trimmed=%u saved_prefix_vertices=%llu",draws,trimmed,(unsigned long long)saved);
  }
- if(vglGetVertexPatchStats) {
-  unsigned hits,misses;vglGetVertexPatchStats(&hits,&misses);
-  l_info("RIO_VERTEX_PATCH hits=%u misses=%u",hits,misses);
- }
  static const char *stage_names[]={"scene_reset","vertex_shader_setup","index_prepare","gxm_submit","fragment_textures","vertex_prepare","vertex_patch","uniform_streams","vertex_layout","vertex_index_scan","vertex_copy"};
  for(unsigned i=0;i<11;++i) {
   l_info("RIO_DRAW_STAGE op=%s samples=%u sampled_us=%llu worst_sample_us=%llu",stage_names[i],stages[i].calls,(unsigned long long)stages[i].us,(unsigned long long)stages[i].worst);
   stages[i]=(typeof(stages[i])){0};
  }
- static const char *names[]={"draw_arrays","draw_elements","matrix4","uniform4","uniform1","uniform_location","draw_sync"};
+ static const char *names[]={"draw_arrays","draw_elements","matrix4","uniform4","uniform1","uniform_location"};
  for(unsigned i=0;i<RIO_RENDER_KINDS;++i) {
   l_info("RIO_RENDER_SAMPLE op=%s calls=%u work=%llu samples=%u sampled_us=%llu worst_sample_us=%llu",
    names[i],sample[i].calls,(unsigned long long)sample[i].work,sample[i].samples,

@@ -640,9 +640,6 @@ void glDrawArrays_soloader(GLenum mode, GLint first, GLsizei count) {
     uint64_t began=gangstar_render_begin(RIO_RENDER_ARRAYS,count>0?(unsigned)count:0);
     glDrawArrays(mode, first, count);
     gangstar_render_end(RIO_RENDER_ARRAYS,began);
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
-    glFinish();
-#endif
 }
 void glDrawElements_soloader(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     hud_trace_draw(mode, 0, count, type, indices);
@@ -653,9 +650,6 @@ void glDrawElements_soloader(GLenum mode, GLsizei count, GLenum type, const void
     glDrawElements(mode, count, type, indices);
     gangstar_render_end(RIO_RENDER_ELEMENTS,began);
     vglSetDebugDrawOutput(NULL);
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
-    glFinish();
-#endif
 }
 #else
 GLint glGetUniformLocation_soloader(GLuint program, const GLchar *name) {
@@ -682,25 +676,11 @@ void glDrawArrays_soloader(GLenum mode, GLint first, GLsizei count) {
     uint64_t began=gangstar_render_begin(RIO_RENDER_ARRAYS,count>0?(unsigned)count:0);
     glDrawArrays(mode, first, count);
     gangstar_render_end(RIO_RENDER_ARRAYS,began);
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
-    // Diagnostic: prevent this thread reusing client vertices after returning
-    // while the GPU is still consuming the submitted draw.
-    uint64_t sync_began=gangstar_render_begin(RIO_RENDER_SYNC,1);
-    glFinish();
-    gangstar_render_end(RIO_RENDER_SYNC,sync_began);
-#endif
 }
 void glDrawElements_soloader(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     uint64_t began=gangstar_render_begin(RIO_RENDER_ELEMENTS,count>0?(unsigned)count:0);
     glDrawElements(mode, count, type, indices);
     gangstar_render_end(RIO_RENDER_ELEMENTS,began);
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
-    // Diagnostic: prevent this thread reusing client vertices after returning
-    // while the GPU is still consuming the submitted draw.
-    uint64_t sync_began=gangstar_render_begin(RIO_RENDER_SYNC,1);
-    glFinish();
-    gangstar_render_end(RIO_RENDER_SYNC,sync_began);
-#endif
 }
 #endif
 

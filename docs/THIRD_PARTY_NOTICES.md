@@ -10,7 +10,7 @@ applicable, including where they differ from a component's main license.
 ## Bundled components
 
 The commits below record the existing upstream provenance; the checked-in
-sources also contain local modifications. LZ4 is recorded by its upstream tag.
+sources also contain local modifications.
 
 | Component | Upstream / recorded revision | License and retained notices |
 | --- | --- | --- |
@@ -18,15 +18,9 @@ sources also contain local modifications. LZ4 is recorded by its upstream tag.
 | FalsoJNI | [v-atamanenko/FalsoJNI](https://github.com/v-atamanenko/FalsoJNI), `083d5a07e025c6dfbb54ac68fd1acf696c23a86c` | MIT for FalsoJNI code: [LICENSE](../lib/falso_jni/LICENSE). Android-derived portions retain separate Apache-2.0 notices in their source headers. |
 | so_util | [Rinnegatamante/so_util](https://github.com/Rinnegatamante/so_util), `c4732373e33d808cd885dec3c2c75302cc4c739b` | MIT; [LICENSE](../lib/so_util/LICENSE), copyright Andy Nguyen |
 | vitaGL | [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL), `9c23758ff17893db63887f95e9a4d9350c986d88` | LGPL-3.0-or-later for vitaGL's own code; [COPYING.LESSER](../lib/vitagl/COPYING.LESSER) and [COPYING](../lib/vitagl/COPYING). Embedded components retain their own source notices. |
-| LZ4 library, v1.10.0 | [lz4/lz4](https://github.com/lz4/lz4/tree/v1.10.0/lib); unmodified `lz4.c` / `lz4.h` | BSD-2-Clause, copyright Yann Collet; [LICENSE](../lib/lz4/LICENSE), [provenance and build conditions](../lib/lz4/README.port.md) |
 | FIOS loader wrapper | Andy Nguyen; [lib/fios/fios.c](../lib/fios/fios.c) and `fios.h` | MIT notice in `fios.c`; original loader license above. This wrapper is separate from Sony's FIOS2 runtime. |
 | Libc bridge declarations and stub-generation inputs | [lib/libc_bridge/](../lib/libc_bridge/), retained from the loader support tree | Preserve the loader's notices. This directory supplies declarations/NIDs and generates import stubs; it does not contain Sony's libc implementation. |
 | SHA-1 implementation | Brad Conte; [sha1.c](../lib/sha1/sha1.c), [sha1.h](../lib/sha1/sha1.h) | Original author and “as is” disclaimer retained in both files. These files do not contain a separate named license grant; this inventory does not assign them a different license. |
-
-LZ4 is compiled only when `GANGSTAR_LIGHTMAP_PACK` or
-`GANGSTAR_LIGHTMAP_BENCH` is enabled. Both are disabled in the default profile.
-The optional host-side cache generators use a separately installed LZ4 library;
-compressed game inputs are private generated data, not bundled library source.
 
 ## External dependencies
 

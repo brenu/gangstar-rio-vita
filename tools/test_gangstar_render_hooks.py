@@ -16,10 +16,6 @@ static void sink(const char *format,...){(void)format;}
 '''+src+r'''
 typedef unsigned GLuint,GLenum;typedef int GLint,GLsizei;typedef char GLchar;typedef float GLfloat;typedef unsigned char GLboolean;
 static unsigned native_calls;
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
-static unsigned finishes;
-static void glFinish(void){assert(native_calls==5+finishes);++finishes;}
-#endif
 static GLint glGetUniformLocation(GLuint p,const GLchar *n){assert(p==7 && n[0]=='x');++native_calls;return 77;}
 static void glUniformMatrix4fv(GLint l,GLsizei c,GLboolean t,const GLfloat *v){assert(l==2 && c==1 && t==0 && *v==3);++native_calls;}
 static void glUniform4fv(GLint l,GLsizei c,const GLfloat *v){assert(l==2 && c==1 && *v==3);++native_calls;}
@@ -39,15 +35,10 @@ int main(void){
  assert(glGetUniformLocation_soloader(7,"x")==77);
  glUniformMatrix4fv_soloader(2,1,0,&value);glUniform4fv_soloader(2,1,&value);glUniform1i_soloader(2,3);
  glDrawArrays_soloader(4,2,3);glDrawElements_soloader(4,3,5,(void *)9);assert(native_calls==6);
-#ifdef GANGSTAR_DIRECT_DRAW_SYNC
- assert(finishes==2 && sample[RIO_RENDER_SYNC].calls==2);
-#endif
 }
 '''
 p=Path('work/tests/render_hooks.c');p.write_text(s)
-for sync in (False,True):
-    cmd=['cc','-std=gnu11','-O2','-Wall','-Wextra','-Werror','-DGANGSTAR_NATIVE_STARTUP_PROFILE','-DGANGSTAR_DETAILED_RENDER_PROFILE','-I','source']
-    if sync:cmd+=['-DGANGSTAR_DIRECT_DRAW_SYNC']
-    subprocess.run(cmd+[str(p),'-o','work/tests/render_hooks'],check=True)
-    subprocess.run(['work/tests/render_hooks'],check=True)
-print('Render hooks: actual forwarding, sampled stages, report reset and completion waits OFF/ON after each draw passed')
+cmd=['cc','-std=gnu11','-O2','-Wall','-Wextra','-Werror','-DGANGSTAR_NATIVE_STARTUP_PROFILE','-DGANGSTAR_DETAILED_RENDER_PROFILE','-I','source']
+subprocess.run(cmd+[str(p),'-o','work/tests/render_hooks'],check=True)
+subprocess.run(['work/tests/render_hooks'],check=True)
+print('Render hooks: actual forwarding, sampled stages and report reset passed')

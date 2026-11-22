@@ -43,15 +43,6 @@ char vgl_file_cache_path[256];
 #endif
 
 #define MAX_CUSTOM_SHADERS 2048 // Maximum number of linkable custom shaders
-#ifdef RIO_VERTEX_PATCH_CACHE
-#include "utils/vertex_patch_cache.h"
-static RioVertexPatchCache rio_vertex_patches;
-void vglGetVertexPatchStats(unsigned *hits,unsigned *misses) {
- THREAD_SAFE()
- *hits=rio_vertex_patches.hits;*misses=rio_vertex_patches.misses;
- rio_vertex_patches.hits=rio_vertex_patches.misses=0;
-}
-#endif
 
 #define MAX_CUSTOM_PROGRAMS 1024 // Maximum number of linkable custom programs
 
@@ -842,9 +833,6 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
 }
 
 void reset_custom_shaders(void) {
-#ifdef RIO_VERTEX_PATCH_CACHE
-    memset(&rio_vertex_patches,0,sizeof(rio_vertex_patches));
-#endif
 	// Init custom shaders
 	for (int i = 0; i < MAX_CUSTOM_SHADERS; i++) {
 		shaders[i].valid = GL_FALSE;
@@ -1343,24 +1331,6 @@ extern void gangstar_render_stage_end(unsigned,uint64_t) __attribute__((weak));
 static FILE *gangstar_stream_trace;
 void vglSetDebugDrawOutput(void *output) { gangstar_stream_trace = output; }
 
-#ifdef RIO_VERTEX_PATCH_CACHE
-#include "utils/vertex_patch_cache.h"
-static void rio_patch_vertex(program *p,SceGxmVertexAttribute *attributes,SceGxmVertexStream *streams) {
- size_t na=p->attr_num*sizeof(*attributes),ns=p->attr_num*sizeof(*streams);
- if(rio_vertex_patch_match(&rio_vertex_patches,cur_program,(uintptr_t)gxm_shader_patcher,
-  (uintptr_t)p->vshader->id,(uintptr_t)p->vshader->prog,attributes,na,streams,ns,(uintptr_t)p->vprog))return;
- int error=sceGxmShaderPatcherCreateVertexProgram(gxm_shader_patcher,p->vshader->id,
-  attributes,p->attr_num,streams,p->attr_num,&p->vprog);
- if(!error)rio_vertex_patch_store(&rio_vertex_patches,cur_program,(uintptr_t)gxm_shader_patcher,
-  (uintptr_t)p->vshader->id,(uintptr_t)p->vshader->prog,attributes,na,streams,ns,(uintptr_t)p->vprog);
- else {
-  rio_vertex_patch_invalidate(&rio_vertex_patches,cur_program);
-#ifdef LOG_ERRORS
-  vgl_log("Vertex shader patching failed (%s) on shader 0x%X with %d attributes and streams.\n",get_gxm_error_literal(error),p->vshader->id,p->attr_num);
-#endif
- }
-}
-#endif
 GLboolean _glDrawElements_CustomShadersRangeIMPL(uint16_t *idx_buf, GLsizei count, uint32_t top_idx, uint32_t base_idx, SceGxmIndexSource index_type, uint32_t first_vertex) {
 #ifdef HAVE_PROFILING
 	uint32_t draw_start = sceKernelGetProcessTimeLow();
@@ -1671,11 +1641,7 @@ GLboolean _glDrawElements_CustomShadersRangeIMPL(uint16_t *idx_buf, GLsizei coun
 	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(5, rio_detail);
 	rio_detail = gangstar_render_stage_clock ? gangstar_render_stage_clock() : 0;
 	// Uploading new vertex program
-#ifdef RIO_VERTEX_PATCH_CACHE
-    rio_patch_vertex(p,attributes,streams);
-#else
 	patch_vertex_program(gxm_shader_patcher, p->vshader->id, attributes, p->attr_num, streams, p->attr_num, &p->vprog);
-#endif
 	sceGxmSetVertexProgram(gxm_context, p->vprog);
 
 	if (rio_detail && gangstar_render_stage_end) gangstar_render_stage_end(6, rio_detail);
@@ -2266,9 +2232,6 @@ void glGetProgramBinary(GLuint prog, GLsizei bufSize, GLsizei *length, GLenum *b
 
 void glProgramBinary(GLuint prog, GLenum binaryFormat, const void *binary, GLsizei length) {
 	THREAD_SAFE()
-#ifdef RIO_VERTEX_PATCH_CACHE
-    rio_vertex_patch_invalidate(&rio_vertex_patches,prog);
-#endif
 
 	// Grabbing passed program
 	program *p = &progs[prog - 1];
@@ -2298,9 +2261,6 @@ void glProgramBinary(GLuint prog, GLenum binaryFormat, const void *binary, GLsiz
 
 void glDeleteProgram(GLuint prog) {
 	THREAD_SAFE()
-#ifdef RIO_VERTEX_PATCH_CACHE
-    rio_vertex_patch_invalidate(&rio_vertex_patches,prog);
-#endif
 
 	// Grabbing passed program
 	program *p = &progs[prog - 1];
@@ -2427,9 +2387,6 @@ void glGetProgramiv(GLuint progr, GLenum pname, GLint *params) {
 
 void glLinkProgram(GLuint progr) {
 	THREAD_SAFE()
-#ifdef RIO_VERTEX_PATCH_CACHE
-    rio_vertex_patch_invalidate(&rio_vertex_patches,progr);
-#endif
 
 	// Grabbing passed program
 	program *p = &progs[progr - 1];

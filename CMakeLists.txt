@@ -55,8 +55,6 @@ if (DUMP_COMPILED_SHADERS)
 endif()
 
 option(GANGSTAR_RUNTIME_DIAGNOSTICS "Enable gameplay timing, sampled profiling and verbose logs" OFF)
-option(GANGSTAR_LIGHTMAP_BENCH "Run optional private-input startup compression benchmark" OFF)
-option(GANGSTAR_LIGHTMAP_PACK "Use an optional private lossless lightmap cache" OFF)
 option(GANGSTAR_STORAGE_TRACE "Measure slow physical reads, lock waits and I/O overlap" OFF)
 option(GANGSTAR_STREAM_PREFETCH "Prepare queued lightmap bytes off the frame thread" ON)
 option(GANGSTAR_MATERIAL_PREFETCH "Keep streamed material tasks pending during lightmap reads" ON)
@@ -74,15 +72,6 @@ if(GANGSTAR_STORAGE_TRACE)
     message(FATAL_ERROR "Storage trace requires runtime diagnostics")
   endif()
   add_definitions(-DGANGSTAR_STORAGE_TRACE)
-endif()
-if(GANGSTAR_LIGHTMAP_PACK)
-  add_definitions(-DGANGSTAR_LIGHTMAP_PACK)
-endif()
-if(GANGSTAR_LIGHTMAP_BENCH)
-  if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
-    message(FATAL_ERROR "Lightmap benchmark requires runtime diagnostics")
-  endif()
-  add_definitions(-DGANGSTAR_LIGHTMAP_BENCH)
 endif()
 if(NOT GANGSTAR_RUNTIME_DIAGNOSTICS)
   add_definitions(-DGANGSTAR_RELEASE_BUILD)
@@ -111,10 +100,6 @@ option(GANGSTAR_IO_PROFILE "Log slow guest file opens and reads" OFF)
 option(GANGSTAR_HEAP_TRACE "Sample host allocations for short memory diagnostics" OFF)
 option(GANGSTAR_GRAPHICS_DIAGNOSTICS "Enable expensive shader dumps and HUD/vertex tracing" OFF)
 option(GANGSTAR_SHARED_ARCHIVE_CACHE "Cache read-only main/patch stdio and descriptor blocks across opens" ON)
-option(GANGSTAR_DISTRICT_PRELOAD "Experimental background district source selection" OFF)
-if(GANGSTAR_DISTRICT_PRELOAD)
-  add_definitions(-DGANGSTAR_DISTRICT_PRELOAD)
-endif()
 option(GANGSTAR_WORLD_SOURCE_PREWARM "Preload all inventoried 512 world source mip chains during loading" OFF)
 option(GANGSTAR_WORLD_TEXTURE_LOD "Use offline-inventoried static world texture mip candidates" OFF)
 
@@ -155,10 +140,6 @@ option(GANGSTAR_NATIVE_ADPCM_VERIFY "Compare optimized native ADPCM blocks again
 if (GANGSTAR_NATIVE_ADPCM_VERIFY)
   add_definitions(-DGANGSTAR_NATIVE_ADPCM_VERIFY)
 endif()
-option(GANGSTAR_AUDIO_POLL_CAP "Cap verified emitter-worker polling sleeps at 8ms" OFF)
-if(GANGSTAR_AUDIO_POLL_CAP)
-  add_definitions(-DGANGSTAR_AUDIO_POLL_CAP)
-endif()
 option(GANGSTAR_AUDIO_SCOPED_PRIORITY "Test priority 160 during native emitter updates on worker 191" OFF)
 if (GANGSTAR_AUDIO_SCOPED_PRIORITY)
   add_definitions(-DGANGSTAR_AUDIO_SCOPED_PRIORITY)
@@ -197,7 +178,6 @@ if(GANGSTAR_AUDIO_DIRECT_PATHS AND NOT GANGSTAR_DIRECT_ASSET_PATHS)
 endif()
 option(GANGSTAR_TEXTURE_PREWARM "Queue selected world textures during streaming initialization" OFF)
 option(GANGSTAR_TEXTURE_REF_CACHE "Retain bounded native refs for selected 512 world textures" OFF)
-option(GANGSTAR_RESIDENT_TEXTURES "Exempt bounded ready textures from automatic GPU unload" OFF)
 option(GANGSTAR_HIDE_TOUCH_BUTTONS "Hide touch control drawings without disabling HUD/input" OFF)
 if (GANGSTAR_HIDE_TOUCH_BUTTONS)
   add_definitions(-DGANGSTAR_HIDE_TOUCH_BUTTONS)
@@ -209,9 +189,6 @@ endif()
 add_definitions(-DGANGSTAR_TEXTURE_LOD_EDGE=${GANGSTAR_TEXTURE_LOD_EDGE})
 option(GANGSTAR_SMALL_LIGHTMAPS "Use retained lower DDS mips for verified large world lightmaps" OFF)
 option(GANGSTAR_CAR_TEXTURE_LOD "Use existing 1024 mips for eight cop/basic-car textures, including worker loads" ${GANGSTAR_SMALL_LIGHTMAPS})
-option(GANGSTAR_ASSET_PREFETCH "Prefetch bounded texture ranges at native pak open" OFF)
-option(GANGSTAR_ARCHIVE_PREFETCH "Read ahead one archive block after sequential access" OFF)
-option(GANGSTAR_NATIVE_ARCHIVE_IO "Use validated native Vita handles for archive cache fills" OFF)
 option(GANGSTAR_NATIVE_STARTUP_PROFILE "Time verified native script-loading methods" OFF)
 option(GANGSTAR_DETAILED_RENDER_PROFILE "Enable detailed native renderer and GL timing hooks" OFF)
 if(GANGSTAR_DETAILED_RENDER_PROFILE)
@@ -258,12 +235,6 @@ if (GANGSTAR_TEXTURE_REF_CACHE)
   endif()
   add_definitions(-DGANGSTAR_TEXTURE_REF_CACHE)
 endif()
-if (GANGSTAR_RESIDENT_TEXTURES)
-  if (NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
-    message(FATAL_ERROR "Resident texture experiment requires native profiling")
-  endif()
-  add_definitions(-DGANGSTAR_RESIDENT_TEXTURES)
-endif()
 if (GANGSTAR_SMALL_LIGHTMAPS)
   if (NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
     message(FATAL_ERROR "Small lightmaps require GANGSTAR_NATIVE_STARTUP_PROFILE=ON")
@@ -272,12 +243,6 @@ if (GANGSTAR_SMALL_LIGHTMAPS)
 endif()
 if(GANGSTAR_STREAM_PREFETCH AND (NOT GANGSTAR_SMALL_LIGHTMAPS OR NOT GANGSTAR_NATIVE_STARTUP_PROFILE))
   message(FATAL_ERROR "Stream preparation requires source lightmap caching and native hooks")
-endif()
-if (GANGSTAR_ASSET_PREFETCH)
-  if (NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
-    message(FATAL_ERROR "Asset prefetch requires GANGSTAR_NATIVE_STARTUP_PROFILE=ON")
-  endif()
-  add_definitions(-DGANGSTAR_ASSET_PREFETCH)
 endif()
 if (GANGSTAR_PAK_NAME_LOOKUP)
   if (NOT GANGSTAR_NATIVE_STARTUP_PROFILE)
@@ -297,12 +262,6 @@ endif()
 option(GANGSTAR_SHADER_WARMUP "Record successful GLSL pairs and warm them before engine startup" ON)
 if (NOT GANGSTAR_SHADER_WARMUP)
   add_definitions(-DGANGSTAR_DISABLE_SHADER_WARMUP)
-endif()
-if (GANGSTAR_NATIVE_ARCHIVE_IO)
-  add_definitions(-DGANGSTAR_NATIVE_ARCHIVE_IO)
-endif()
-if (NOT GANGSTAR_ARCHIVE_PREFETCH)
-  add_definitions(-DGANGSTAR_DISABLE_PREFETCH)
 endif()
 if (NOT GANGSTAR_SHARED_ARCHIVE_CACHE)
   add_definitions(-DGANGSTAR_DISABLE_ARCHIVE_CACHE)
@@ -405,8 +364,6 @@ else ()
 endif()
 
 set(SOURCES
-    source/gangstar_lightmap_bench.c
-    source/gangstar_lightmap_pack.c
     source/gangstar_storage_trace.c
     source/gangstar_stream_prefetch.c
     source/main.c
@@ -425,12 +382,10 @@ set(SOURCES
     source/gangstar_controls.c
     source/gangstar_audio_output.c
     source/gangstar_archive_cache.c
-    source/gangstar_audio_poll.c
     source/gangstar_audio_probe.c
     source/gangstar_file_names.c
     source/gangstar_loose_index.c
     source/gangstar_archive_io.c
-    source/gangstar_district_preload.c
     source/gangstar_render_sample.c
     source/gangstar_texture_lod.c
     source/gangstar_texture_hot.c
@@ -471,9 +426,6 @@ list(APPEND SOURCES
 
 add_library(rio_adpcm STATIC source/gangstar_adpcm.c source/gangstar_adpcm_stream.c)
 target_compile_options(rio_adpcm PRIVATE -O3)
-if(GANGSTAR_LIGHTMAP_BENCH OR GANGSTAR_LIGHTMAP_PACK)
-  list(APPEND SOURCES lib/lz4/lz4.c)
-endif()
 add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
 if (GANGSTAR_NATIVE_PROFILER)
   target_sources(${CMAKE_PROJECT_NAME} PRIVATE "${RIO_PROFILE_GEN_DIR}/gangstar_native_profile_sites.h")
@@ -530,10 +482,6 @@ option(GANGSTAR_VITAGL_STORE_DEPTH_STENCIL "Preserve depth and stencil across re
 if(GANGSTAR_VITAGL_STORE_DEPTH_STENCIL)
   string(APPEND VITAGL_MAKE_FLAGS " STORE_DEPTH_STENCIL=1")
 endif()
-option(GANGSTAR_DIRECT_DRAW_SYNC "Diagnostic completion wait after client draw calls" OFF)
-if(GANGSTAR_DIRECT_DRAW_SYNC)
-  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GANGSTAR_DIRECT_DRAW_SYNC)
-endif()
 if(GANGSTAR_VITAGL_FULL_DRAW_SPEEDHACK)
   if(GANGSTAR_VITAGL_SAFE_DRAW_SPEEDHACK)
     message(FATAL_ERROR "Choose either full DRAW_SPEEDHACK=1 or large-buffer DRAW_SPEEDHACK=2")
@@ -582,10 +530,6 @@ endif()
 option(GANGSTAR_VERTEX_RANGE_COPY "Trim unused client vertex prefixes in indexed triangle draws" ON)
 if(GANGSTAR_VERTEX_RANGE_COPY)
   string(APPEND VITAGL_MAKE_FLAGS " RIO_VERTEX_RANGE_COPY=1")
-endif()
-option(GANGSTAR_VERTEX_PATCH_CACHE "Reuse identical live vertex patch selections" OFF)
-if(GANGSTAR_VERTEX_PATCH_CACHE)
-  string(APPEND VITAGL_MAKE_FLAGS " RIO_VERTEX_PATCH_CACHE=1")
 endif()
 string(APPEND VITAGL_MAKE_FLAGS " SAFE_DRAW=1")
 # This revision's GC worker advances the producer's global queue/index. Running
@@ -641,7 +585,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM
 
 target_include_directories(${CMAKE_PROJECT_NAME}
                            PUBLIC ${CMAKE_SOURCE_DIR}/source
-                           PRIVATE ${CMAKE_SOURCE_DIR}/lib/lz4
                            )
 
 

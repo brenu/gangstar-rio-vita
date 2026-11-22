@@ -1,5 +1,4 @@
 #include "gangstar_archive_cache.h"
-#include "gangstar_prefetch_policy.h"
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -66,35 +65,6 @@ static void *probe_worker(void *unused) {
     return NULL;
 }
 int main(void) {
-    uint64_t first, end;
-    assert(rio_prefetch_asset_bounds(17, 2796344, 3000000, RIO_CACHE_BLOCK_SIZE, &first, &end));
-    assert(first == 0 && end == 2796361);
-    unsigned blocks = 1;
-    while (rio_prefetch_advance(&first, end, RIO_CACHE_BLOCK_SIZE)) ++blocks;
-    assert(blocks == (2796361 + RIO_CACHE_BLOCK_SIZE - 1) / RIO_CACHE_BLOCK_SIZE && first < end && end - first <= RIO_CACHE_BLOCK_SIZE);
-    assert(!rio_prefetch_asset_bounds(0, 1, 3000000, RIO_CACHE_BLOCK_SIZE, &first, &end));
-    assert(!rio_prefetch_asset_bounds(0, 4194305, 5000000, RIO_CACHE_BLOCK_SIZE, &first, &end));
-    assert(!rio_prefetch_asset_bounds(UINT64_MAX - 1, 262144, UINT64_MAX, RIO_CACHE_BLOCK_SIZE, &first, &end));
-    assert(!rio_prefetch_asset_bounds(0, 262144, 3000000, 0, &first, &end));
-    assert(rio_prefetch_asset_bounds(3000000 - 262144, 262144, 3000000, RIO_CACHE_BLOCK_SIZE, &first, &end));
-    RioPrefetchPolicy prediction;
-    rio_prefetch_reset(&prediction);
-    uint64_t target;
-    for (unsigned i = 0; i < 3; ++i)
-        assert(!rio_prefetch_next(&prediction, i * 16384, 16384, length,
-            RIO_CACHE_BLOCK_SIZE, &target));
-    assert(rio_prefetch_next(&prediction, 49152, 16384, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(target == (65536 + RIO_CACHE_BLOCK_SIZE - 1) / RIO_CACHE_BLOCK_SIZE * RIO_CACHE_BLOCK_SIZE);
-    assert(rio_prefetch_next(&prediction, 65536, 16384, length, RIO_CACHE_BLOCK_SIZE, &target) == (RIO_CACHE_BLOCK_SIZE <= 65536));
-    assert(!rio_prefetch_next(&prediction, 500000, 16384, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(!rio_prefetch_next(&prediction, length - 65536, 65536, length,
-        RIO_CACHE_BLOCK_SIZE, &target)); // never read beyond EOF
-    assert(!rio_prefetch_next(&prediction, length - 1, 2, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(!rio_prefetch_next(&prediction, 0, 0, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(rio_prefetch_next(&prediction, 0, 65536, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(!rio_prefetch_next(&prediction, 400000, 16384, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(rio_prefetch_next(&prediction, 0, 65536, length, RIO_CACHE_BLOCK_SIZE, &target));
-    assert(target == (65536 + RIO_CACHE_BLOCK_SIZE - 1) / RIO_CACHE_BLOCK_SIZE * RIO_CACHE_BLOCK_SIZE); // revisit may schedule a formerly evicted block
     void *small=malloc(RIO_CACHE_BLOCK_SIZE);assert(small);
     assert(rio_archive_cache_init_blocks(&cache,small,0)==EINVAL);
     assert(rio_archive_cache_init_blocks(&cache,small,RIO_CACHE_BLOCKS+1)==EINVAL);

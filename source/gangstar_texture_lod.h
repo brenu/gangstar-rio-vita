@@ -203,7 +203,4 @@ const void *gangstar_texture_lod_get(int, uint64_t, uint32_t, const char *, uint
 void gangstar_texture_lod_report(unsigned);
 // Main-thread fixed preload phase; demand fills otherwise use spare capacity only.
 void gangstar_texture_source_preloading(int);
-int gangstar_texture_source_background(uint64_t,uint32_t,const char *);
-typedef struct {uint64_t offset;uint32_t size;int original;unsigned priority;} RioTextureSourcePriority;
-void gangstar_texture_source_priorities(const RioTextureSourcePriority *,unsigned);
 #endif

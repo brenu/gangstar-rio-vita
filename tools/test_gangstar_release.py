@@ -56,7 +56,7 @@ int main(void){
 }
 ''',('source/gangstar_audio_probe.c','-pthread'))
 # The DDS hook used to gate pinning on a nonzero profiling timestamp.
-s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static uintptr_t probe_21(');b=s.index('\n#ifdef GANGSTAR_RESIDENT_TEXTURES',a)
+s=Path('source/gangstar_native_startup.c').read_text();a=s.index('static uintptr_t probe_21(');b=s.index('\nstatic uintptr_t probe_27(',a)
 run('release_texture_pin',r"""
 #include <stdint.h>
 #include <assert.h>

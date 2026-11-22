@@ -1,6 +1,4 @@
-#include "gangstar_district_preload.h"
 #include "gangstar_jni_strings.h"
-#include "gangstar_audio_poll.h"
 /* Gangstar Rio diagnostic loader, derived from the local Vita SO loader. */
 #include "utils/init.h"
 #include "utils/logger.h"
@@ -52,10 +50,6 @@ void gangstar_audio_output_report(void);
 static int gangstar_main(void) {
     soloader_init_all();
     gangstar_save_startup();
-#ifdef GANGSTAR_LIGHTMAP_BENCH
-    extern void gangstar_lightmap_benchmark(void);
-    gangstar_lightmap_benchmark();
-#endif
     gangstar_archive_init();
 #ifdef GANGSTAR_LOOSE_PATH_INDEX
     l_info("RIO_LOOSE_INDEX startup_absent=%u",rio_loose_index_init(DATA_PATH));
@@ -247,7 +241,6 @@ static int gangstar_main(void) {
 #endif
         step(&jni, game_class);
         gangstar_jni_strings_frame_end();
-        gangstar_district_poll();
 
 #ifndef GANGSTAR_RELEASE_BUILD
         uint64_t swap_begin = sceKernelGetProcessTimeWide();
@@ -416,7 +409,6 @@ static int gangstar_main(void) {
             gangstar_audio_report();
             gangstar_audio_output_report();
             gangstar_upload_report();
-            gangstar_audio_poll_report();
             gangstar_log_report();
             last_report_us=sceKernelGetProcessTimeWide()-report_begin;
         }

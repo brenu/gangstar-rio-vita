@@ -7,8 +7,6 @@ mkdir -p work/tests
 cc -std=c11 -O2 -Wall -Wextra -Werror -Isource tools/test_gangstar_texture_fault.c -o work/tests/texture_fault
 work/tests/texture_fault
 python3 tools/test_gangstar_save_identity.py
-python3 tools/test_gangstar_lightmap_bench.py
-python3 tools/test_gangstar_lightmap_pack.py
 python3 tools/test_gangstar_storage_trace.py
 python3 tools/test_gangstar_memory_log.py
 python3 tools/test_gangstar_stream_prefetch.py
@@ -21,8 +19,6 @@ work/tests/material_dispatch
 mkdir -p work/tests
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_buttons.c -o work/tests/gangstar_buttons
 work/tests/gangstar_buttons
-cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_audio_poll.c -o work/tests/gangstar_audio_poll
-work/tests/gangstar_audio_poll
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_audio_chunk.c -o work/tests/gangstar_audio_chunk
 work/tests/gangstar_audio_chunk
 cc -std=c11 -O3 -Wall -Wextra -Werror -I source source/gangstar_adpcm.c tools/test_gangstar_adpcm.c -o work/tests/gangstar_adpcm
@@ -78,8 +74,6 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_texture_pin.
 work/tests/gangstar_texture_pin
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_texture_identity.c -o work/tests/gangstar_texture_identity
 work/tests/gangstar_texture_identity
-cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_resident.c -o work/tests/gangstar_resident
-work/tests/gangstar_resident
 for edge in 1024 512; do
 cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_TEXTURE_LOD_EDGE=$edge -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source    -pthread source/gangstar_texture_lod.c tools/test_gangstar_texture_lod.c -o work/tests/gangstar_texture_lod
 work/tests/gangstar_texture_lod
@@ -87,8 +81,6 @@ done
 cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_TEXTURE_LOD_EDGE=512 -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source -pthread source/gangstar_texture_lod.c tools/test_gangstar_texture_lod.c -o work/tests/gangstar_world_texture_lod
 work/tests/gangstar_world_texture_lod --original
 work/tests/gangstar_world_texture_lod
-cc -std=c11 -O2 -D_XOPEN_SOURCE=700 -DGANGSTAR_SMALL_LIGHTMAPS -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_LIGHTMAP_PACK -DGANGSTAR_TEXTURE_LOD_EDGE=512 -Wl,--wrap=open -Wl,--wrap=fstat -Wall -Wextra -Werror -I source -pthread source/gangstar_texture_lod.c tools/test_gangstar_texture_lod.c -o work/tests/gangstar_packed_texture_lod
-work/tests/gangstar_packed_texture_lod --original
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_pak_lookup.c -o work/tests/gangstar_pak_lookup
 work/tests/gangstar_pak_lookup
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_pedals.c -o work/tests/gangstar_pedals
@@ -174,9 +166,6 @@ python3 tools/test_gangstar_route_generation.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -DRIO_CACHE_BLOCK_KIB=32 -I source tools/test_gangstar_archive_batch.c source/gangstar_archive_cache.c -o work/tests/archive_batch
 work/tests/archive_batch
 
-cc -std=c11 -D_GNU_SOURCE -DGANGSTAR_WORLD_TEXTURE_LOD -DGANGSTAR_TEXTURE_LOD_EDGE=512 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_district.c -lm -o work/tests/district
-work/tests/district
-python3 tools/test_gangstar_district_plan.py
 
 cc -std=c11 -O2 -Wall -Wextra -Werror -I source tools/test_gangstar_phase_timing.c -o work/tests/phase_timing
 work/tests/phase_timing
@@ -186,10 +175,6 @@ work/tests/render_sample
 
 python3 tools/test_gangstar_render_hooks.py
 
-cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_vertex_patch.c -o work/tests/vertex_patch
-work/tests/vertex_patch
-
-python3 tools/test_gangstar_vertex_patch_calls.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_vertex_range.c -o work/tests/vertex_range
 work/tests/vertex_range
 python3 tools/test_gangstar_vertex_range_draw.py

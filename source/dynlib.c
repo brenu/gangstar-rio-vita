@@ -1,5 +1,4 @@
 #include "gangstar_diagnostics.h"
-#include "gangstar_audio_poll.h"
 /*
  * Copyright (C) 2021      Andy Nguyen
  * Copyright (C) 2021      Rinnegatamante
@@ -154,8 +153,7 @@ static ssize_t gangstar_profile_recv(int fd, void *buffer, size_t size, int flag
 }
 static int gangstar_usleep(useconds_t microseconds) {
     uint64_t began = gangstar_wait_begin();
-    unsigned actual=gangstar_audio_poll_sleep(microseconds,(uintptr_t)__builtin_return_address(0));
-    int result = usleep(actual);
+    int result = usleep(microseconds);
     gangstar_wait_end(RIO_WAIT_SLEEP, began, (uintptr_t)__builtin_return_address(0),
         0, microseconds, result, "usleep");
     return result;
