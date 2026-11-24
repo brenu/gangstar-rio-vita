@@ -3,6 +3,7 @@
 #include "gangstar_texture_hot.h"
 #include "gangstar_archive_cache.h"
 #include "gangstar_heap_usage.h"
+#include "gangstar_memory_relief.h"
 #include "utils/logger.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -84,6 +85,12 @@ void *gangstar_texture_hot_get(int archive, uint64_t offset, uint32_t size) {
     }
     free(copy);
     return data;                                          // not retained: hand over the read
+}
+
+size_t gangstar_texture_hot_relieve(size_t bytes) {
+    size_t before = hot.bytes;
+    rio_hot_trim(&hot, before > bytes ? before - bytes : 0, 0);
+    return before - hot.bytes;
 }
 
 void gangstar_texture_hot_report(void) {

@@ -34,6 +34,10 @@ static int gangstar_wait_is_main(void){return is_main;}
 #define l_info(...) ((void)0)
 static unsigned char header[128];
 static unsigned char byte_at(unsigned pos){return (unsigned char)(pos*17u+pos/1024u);}
+#include "gangstar_lightmap_pool.h"
+void *gangstar_lightmap_pool_get(size_t n){(void)n;return NULL;}
+int gangstar_lightmap_pool_put(void *p){(void)p;return 0;}
+size_t gangstar_memory_relieve(size_t n){(void)n;return 0;}
 int gangstar_lightmap_read_range(uint32_t offset,void *dst,uint32_t start,uint32_t n){
  assert(offset==183416410u);assert(start<=2796344u && n<=2796344u-start);
  if(fail_read && start)return 0;

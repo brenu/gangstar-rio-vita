@@ -425,6 +425,18 @@ static void gangstar_fps_camera_guard(void) {
     l_info("Gangstar FPS camera: optional scene-node position fallback installed");
 }
 
+// From the third launch, GS3DStuff::streamingUpdate opens the store review
+// popup through MenuMgr's main menu layout, which is null during gameplay.
+// This flag is its only gate, and nothing else reads it (ELF 3b7f7c).
+static void gangstar_review_popup_guard(void) {
+    unsigned char *enabled = (unsigned char *)so_symbol(&so_mod, "is_show_review");
+    if (!enabled || *enabled != 1) {
+        l_warn("Gangstar: review popup flag not recognised; left unchanged");return;
+    }
+    *enabled = 0;
+    l_info("Gangstar: store review popup disabled");
+}
+
 #ifdef GANGSTAR_SKIP_TRACKING_SAVE
 // glot::TrackingManager::updateSaveFile rewrites Gameloft's analytics queue
 // file on the memory card (~100 ms on the frame thread, about once a minute).
@@ -451,6 +463,7 @@ void so_patch(void) {
 	gangstar_controls_init();
     gangstar_mission_intro_guard();
     gangstar_fps_camera_guard();
+    gangstar_review_popup_guard();
     gangstar_iap_offline_install();
 #ifdef GANGSTAR_HIDE_TOUCH_BUTTONS
 	gangstar_hide_touch_buttons();

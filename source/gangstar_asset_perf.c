@@ -242,6 +242,7 @@ void gangstar_upload_fallback(unsigned level,unsigned width,unsigned height,size
     upload_failures[upload_failure_count++]=(__typeof__(upload_failures[0])){
         frame_number,level,width,height,pool,available,required,reserved,pool_free};
 }
+void gangstar_lightmap_pool_report(void) __attribute__((weak));
 void gangstar_upload_report(void) {
 #ifdef GANGSTAR_UPLOAD_STAGES
     static uint64_t next_census;
@@ -259,6 +260,7 @@ void gangstar_upload_report(void) {
             (unsigned)heap.uordblks,(unsigned)heap.fordblks,
             (unsigned)vglMemFree(VGL_MEM_VRAM),(unsigned)vglMemFree(VGL_MEM_RAM),
             (unsigned)vglMemFree(VGL_MEM_SLOW));
+        if (gangstar_lightmap_pool_report) gangstar_lightmap_pool_report();
         next_census = now + 10000000u;
         if (gangstar_texture_alloc_census) {
             uint64_t live[12],pools[5];gangstar_texture_alloc_census(live,pools);

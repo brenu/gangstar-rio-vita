@@ -2,6 +2,7 @@
 #include "gangstar_archive_cache.h"
 #include "gangstar_source_cache.h"
 #include "gangstar_heap_usage.h"
+#include "gangstar_memory_relief.h"
 #include "utils/logger.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -178,6 +179,16 @@ const void *gangstar_texture_original_get(int archive,uint64_t offset,uint32_t s
     const char *name,uint32_t *output_size) {
     return texture_source_get(archive,offset,size,name,output_size,1,0);
 }
+#ifdef GANGSTAR_SMALL_LIGHTMAPS
+size_t gangstar_texture_source_relieve(size_t bytes) {
+    // Reached from allocation failures anywhere: never wait for the cache.
+    if(pthread_mutex_trylock(&source_lock))return 0;
+    size_t before=source_cache.bytes;
+    rio_source_trim(&source_cache,before>bytes?before-bytes:0);
+    size_t freed=before-source_cache.bytes;
+    pthread_mutex_unlock(&source_lock);return freed;
+}
+#endif
 int gangstar_texture_source_cached(uint32_t offset,uint32_t size) {
 #ifdef GANGSTAR_SMALL_LIGHTMAPS
  RioSourceKey key={0,1,offset,size};

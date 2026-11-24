@@ -1,3 +1,6 @@
+#include "gangstar_memory_relief.h"
+#include "gangstar_lightmap_pool.h"
+#include "gangstar_spill_pool.h"
 #include "gangstar_jni_strings.h"
 /* Gangstar Rio diagnostic loader, derived from the local Vita SO loader. */
 #include "utils/init.h"
@@ -182,6 +185,7 @@ static int gangstar_main(void) {
     if (!set_paths || !init_gl || !view_settings || !state_changed || !resize || !step)
         fatal_error("Gangstar: missing renderer JNI exports");
     gl_init();
+    gangstar_install_new_relief();
     gangstar_shader_warmup();
     l_info("Calling Gangstar initGL and getViewSettings");
     init_gl(&jni, game_class);
@@ -423,6 +427,8 @@ int main(void) {
     gangstar_log_start();
     l_info("Gangstar Rio diagnostic starting; title ID G4HM00001");
     l_info("Gangstar VitaGL flags: %s", GANGSTAR_VITAGL_BUILD_FLAGS);
+    gangstar_lightmap_pool_init();
+    gangstar_spill_init();
     int result = gangstar_main();
     gangstar_log_finish();
     sceKernelExitProcess(result);

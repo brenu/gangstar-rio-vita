@@ -18,6 +18,8 @@
 #include "gangstar_adpcm_stream.h"
 #include "gangstar_native_perf.h"
 #include "gangstar_wait_perf.h"
+#include "gangstar_memory_relief.h"
+#include "gangstar_lightmap_pool.h"
 #include "gangstar_route_cache.h"
 #include "gangstar_path_index.h"
 #include "gangstar_pak_lookup.h"
@@ -1622,7 +1624,11 @@ static uintptr_t stream_partial_map(uintptr_t mapped,uintptr_t name,uintptr_t c,
   uint32_t offset=rio_district_assets[i].offset;
   if(!gangstar_lightmap_read_range(offset,header,0,128) || !rio_lod_plan(header,2796344u,&plan))break;
   // Zero skipped levels defensively; the original header/dimensions never change.
-  unsigned char *data=calloc(1,2796344u);if(!data)break;
+  unsigned char *data=gangstar_lightmap_pool_get(2796344u);
+  if(data)memset(data,0,2796344u);
+  else data=calloc(1,2796344u);
+  while(!data && gangstar_memory_relieve(2796344u))data=calloc(1,2796344u);
+  if(!data)break;
   memcpy(data,header,128);*(uintptr_t *)mapped=(uintptr_t)data;
   ((uintptr_t *)mapped)[1]=2796344u;
   *slot=(RioPartialMap){mapped,data,offset};return 1;
@@ -1686,7 +1692,8 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
   if(!gangstar_lightmap_read_range(slot->offset,slot->data+start,start,2796344u-start)) {
    // Never submit a partially populated texture after an I/O failure.
    memset((void *)out,0,sizeof(uintptr_t));
-   free(slot->data);((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
+   if(!gangstar_lightmap_pool_put(slot->data))free(slot->data);
+   ((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
    memset(slot,0,sizeof(*slot));return out;
   }
   unsigned char *data=slot->data;
@@ -1698,7 +1705,7 @@ static uintptr_t stream_partial_mips(uintptr_t out,uintptr_t texture,uintptr_t m
   if(*(uintptr_t *)mapped==(uintptr_t)data) {
    ((uintptr_t *)mapped)[0]=0;((uintptr_t *)mapped)[1]=0;
   }
-  free(data);
+  if(!gangstar_lightmap_pool_put(data))free(data);
   l_info("RIO_PARTIAL_LIGHTMAP frame=%u offset=%u requested=%u source_bytes=2796344 read_bytes=%u",
    reuse_frame,source_offset,(unsigned)level,128u+2796344u-start);
   return result;

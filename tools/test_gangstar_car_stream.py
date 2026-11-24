@@ -27,6 +27,7 @@ static int main_thread=1,bad_format;
 static uintptr_t expected_level,expected_args[7];
 static unsigned calls;
 static int gangstar_wait_is_main(void){return main_thread;}
+int gangstar_lightmap_pool_put(void *p){(void)p;return 0;}
 int gangstar_lightmap_read_range(uint32_t o,void *p,uint32_t s,uint32_t n){(void)o;(void)p;(void)s;(void)n;assert(!"No deferred lightmap in this fixture");return 0;}
 static unsigned mip(unsigned f,unsigned w,unsigned h,unsigned l,unsigned alpha){(void)f;assert(w==2048 && h==2048 && !alpha);return bad_format?1:((w>>l)*(h>>l)/2);}
 static uintptr_t native(uintptr_t o,uintptr_t t,uintptr_t m,uintptr_t k,uintptr_t n,uintptr_t l,uintptr_t f){

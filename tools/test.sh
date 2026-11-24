@@ -51,7 +51,15 @@ work/tests/gangstar_alpha_overwrite
 cc -std=c11 -O2 -Wall -Wextra -Werror -I lib/vitagl/source/utils tools/test_gangstar_etc_reserve.c -o work/tests/gangstar_etc_reserve
 work/tests/gangstar_etc_reserve
 python3 tools/test_gangstar_etc_initial.py
+python3 tools/test_gangstar_review_popup.py
 python3 tools/test_gangstar_etc_fallback.py
+cc -std=gnu11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -I source -I lib/vitagl/source/utils -I tools/test_mocks tools/test_gangstar_memory_relief.c -o work/tests/gangstar_memory_relief
+work/tests/gangstar_memory_relief
+cc -std=gnu11 -O1 -g -fsanitize=address,undefined -pthread -Wall -Wextra -Werror -I source -I tools/test_mocks tools/test_gangstar_lightmap_pool.c -o work/tests/gangstar_lightmap_pool
+work/tests/gangstar_lightmap_pool
+cc -std=gnu11 -O1 -g -fsanitize=address,undefined -pthread -Wall -Wextra -Werror -I source -I tools/test_mocks tools/test_gangstar_spill_pool.c -o work/tests/gangstar_spill_pool
+work/tests/gangstar_spill_pool
+python3 tools/test_gangstar_spill_hooks.py
 python3 tools/test_gangstar_gc_census.py
 python3 tools/test_gangstar_gc_extent.py
 python3 tools/test_gangstar_texture_alloc_census.py

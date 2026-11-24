@@ -645,10 +645,16 @@ size_t vgl_mem_get_total_space(vglMemType type) {
 	}
 }
 
+// Port hooks: last-resort texture blocks reserved inside the newlib heap
+extern size_t gangstar_spill_usable(const void *) __attribute__((weak));
+extern int gangstar_spill_put(void *) __attribute__((weak));
+
 size_t vgl_malloc_usable_size(void *ptr) {
 	vglMemType type = vgl_mem_get_type_by_addr(ptr);
-	if (type == VGL_MEM_EXTERNAL)
-		return malloc_usable_size(ptr);
+	if (type == VGL_MEM_EXTERNAL) {
+		size_t spill = gangstar_spill_usable ? gangstar_spill_usable(ptr) : 0;
+		return spill ? spill : malloc_usable_size(ptr);
+	}
 #ifdef PHYCONT_ON_DEMAND
 	else if (type == VGL_MEM_SLOW) {
 		SceKernelMemBlockInfo info;
@@ -671,6 +677,8 @@ void vgl_free(void *ptr) {
 		return;
 
 	vglMemType type = vgl_mem_get_type_by_addr(ptr);
+	if (type == VGL_MEM_EXTERNAL && gangstar_spill_put && gangstar_spill_put(ptr))
+		return;
 	if (type == VGL_MEM_EXTERNAL)
 #ifdef HAVE_WRAPPED_ALLOCATORS
 		__real_free(ptr);
@@ -777,6 +785,10 @@ void *vgl_realloc(void *ptr, size_t size) {
 	}
 	vglMemType type = vgl_mem_get_type_by_addr(ptr);
 	if (type == VGL_MEM_EXTERNAL) {
+		// A reserved block never moves here: callers copy and retire it themselves
+		size_t spill = gangstar_spill_usable ? gangstar_spill_usable(ptr) : 0;
+		if (spill)
+			return size <= spill ? ptr : NULL;
 #ifdef HAVE_WRAPPED_ALLOCATORS
 		return __real_realloc(ptr, size);
 #else

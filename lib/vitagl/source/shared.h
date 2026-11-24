@@ -187,6 +187,8 @@ typedef enum {
 		flag_dirty_frag_unif(y) \
 	}
 
+#include "utils/etc1_base_fallback.h"
+
 // Texture object struct
 typedef struct texture {
 #ifndef TEXTURES_SPEEDHACK
@@ -202,6 +204,7 @@ typedef struct texture {
 	uint8_t mip_count;
 #ifdef VGL_ETC1_OOM_FALLBACK
 	uint8_t compressed_mip_failed;
+	vgl_etc1_base etc1_base;
 #endif
 	uint8_t ref_counter;
 	uint8_t faces_counter;
@@ -861,6 +864,7 @@ extern uint16_t *default_quads_idx_ptr; // sceGxm mapped progressive indices buf
 extern uint16_t *default_line_strips_idx_ptr; // sceGxm mapped progressive indices buffer for line strips
 #if !defined(HAVE_PTHREAD) && defined(HAVE_SINGLE_THREADED_GC)
 extern int garbage_collector(unsigned int args, void *arg); // Garbage collector function
+extern void gc_drain_retired(void); // Releases every closed frame purge list (GPU must be idle)
 #endif
 extern SceUID gc_mutex[2]; // Garbage collector mutex
 extern GLboolean has_cached_mem; // Flag for wether to use cached memory for mempools or not

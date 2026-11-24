@@ -75,4 +75,38 @@ p=Path('work/tests/gc_extent.c');p.parent.mkdir(parents=True,exist_ok=True);p.wr
 for flags in ([],['-DHAVE_SINGLE_THREADED_GC'],['-DHAVE_SINGLE_THREADED_GC','-DVGL_UPLOAD_STAGES','-fsanitize=address,undefined','-fno-omit-frame-pointer']):
     subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-variable','-Ilib/vitagl/source/utils',*flags,str(p),'-o','work/tests/gc_extent'],check=True)
     subprocess.run(['work/tests/gc_extent'],check=True,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0','UBSAN_OPTIONS':'halt_on_error=1'})
+# Forced drain: every closed frame is released, the frame being recorded never.
+a=s.index('void gc_drain_retired(void) {');drain=s[a:s.index('\n}\n',a)+3]
+code=r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include "retire_queue.h"
+#define FRAME_PURGE_FREQ 4
+#define FRAME_PURGE_RENDERTARGETS_LIST_SIZE 2
+static void *frame_purge_list[4][8],*frame_rt_purge_list[4][2];
+static size_t frame_purge_counts[4];
+static int frame_purge_idx;
+static uintptr_t freed,targets;
+static void vgl_free(void *p){freed+=(uintptr_t)p;}
+static void sceGxmDestroyRenderTarget(void *p){targets+=(uintptr_t)p;}
+static void sceGxmTransferFinish(void){}
+'''+drain+r'''
+int main(void){
+ for(frame_purge_idx=0;frame_purge_idx<4;++frame_purge_idx){
+  freed=targets=0;
+  for(int f=0;f<4;++f){
+   frame_purge_list[f][0]=NULL;frame_purge_list[f][1]=(void *)((uintptr_t)1<<f);
+   frame_rt_purge_list[f][1]=(void *)((uintptr_t)1<<f);
+   frame_purge_counts[f]=f==frame_purge_idx?0:2;
+  }
+  uintptr_t expected=15u&~(1u<<frame_purge_idx);
+  for(int n=0;n<8;++n){gc_drain_retired();assert(freed==expected && targets==expected);}
+  assert(frame_purge_list[frame_purge_idx][1] && frame_rt_purge_list[frame_purge_idx][1]);
+ }
+}
+'''
+p=Path('work/tests/gc_drain.c');p.write_text(code)
+subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-Ilib/vitagl/source/utils','-fsanitize=address,undefined',str(p),'-o','work/tests/gc_drain'],check=True)
+subprocess.run(['work/tests/gc_drain'],check=True)
 print('GC extent: actual collector matches full scans for 20000 frames, holes/final slot, forced cycles, same release order/delay, zero empty scans and worker fallback (ASan/UBSan)')

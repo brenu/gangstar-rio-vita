@@ -1,3 +1,4 @@
+#include "gangstar_gpu_pools.h"
 #include "gangstar_diagnostics.h"
 #include "gangstar_render_sample.h"
 /*
@@ -108,18 +109,11 @@ void gl_init() {
     // fallback, NOT initialization success (GL_FALSE is normal at 960x544).
     unsigned ram_mib=16,physical_mib=8;
 #ifdef GANGSTAR_VERTEX_CPU_POOLS
-    // The three rotating buffers total 32 MiB and are allocated in whole
-    // chunks. A 16/8 MiB layout cannot hold them all without VRAM spill.
-    // Reserve another 8 MiB in each CPU pool only with startup headroom.
-    if(before.size_user>=32u*1024*1024 && before.size_phycont>=24u*1024*1024) {
-        ram_mib=24;physical_mib=16;
-        // Each rotating buffer is ~10.7 MiB. With a 16 MiB phycont pool the
-        // third one spilled into CDRAM, taking ~11 MiB from textures. Late in
-        // a session that pushes 2048x2048 lightmaps out of VRAM into the game
-        // heap, and a failed lightmap upload shows as green/pink scenery.
-        // A 23 MiB phycont pool holds two buffers and keeps ~3 MiB free.
-        if(before.size_phycont>=26u*1024*1024) physical_mib=23;
-    }
+    RioGpuPools pools=rio_gpu_pools(before.size_user,before.size_phycont);
+    ram_mib=pools.ram_mib;physical_mib=pools.physical_mib;
+    if(physical_mib<23)
+        l_warn("RIO_GPU_POOLS reduced ram=%u physical=%u free_user=%u free_physical=%u",
+            ram_mib,physical_mib,before.size_user,before.size_phycont);
 #endif
     GLboolean fallback = vglInitWithCustomSizes(0, 960, 544,
         ram_mib * 1024 * 1024, 96 * 1024 * 1024, physical_mib * 1024 * 1024, 0, SCE_GXM_MULTISAMPLE_NONE);

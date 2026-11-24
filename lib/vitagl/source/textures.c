@@ -1829,6 +1829,7 @@ inline __attribute__((always_inline)) void glGenTextures(GLsizei n, GLuint *res)
 			texture_slots[i].mip_count = 1;
 #ifdef VGL_ETC1_OOM_FALLBACK
 			texture_slots[i].compressed_mip_failed = 0;
+			texture_slots[i].etc1_base = (vgl_etc1_base){0};
 #endif
 #ifdef HAVE_UNPURE_TEXTURES
 			texture_slots[i].mip_start = -1;

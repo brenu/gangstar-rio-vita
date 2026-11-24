@@ -22,6 +22,8 @@
 #include "gangstar_wait_perf.h"
 #include "gangstar_audio_probe.h"
 #include "gangstar_heap_usage.h"
+#include "gangstar_memory_relief.h"
+#include "gangstar_lightmap_pool.h"
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <stdlib.h>
@@ -530,7 +532,9 @@ static void gangstar_allocation_failed(const char *operation, size_t size, uintp
 static void *gangstar_malloc(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     uint64_t audio = audio_alloc_begin();
-    void *result = malloc(size);
+    void *result = gangstar_lightmap_pool_get(size);
+    if (!result) result = malloc(size);
+    while (!result && size && gangstar_memory_relieve(size)) result = malloc(size);
     audio_alloc_end(audio);
     if (!result && size) gangstar_allocation_failed("malloc", size, caller);
     if (result) rio_heap_allocated(result, size, caller);
@@ -540,6 +544,8 @@ static void *gangstar_calloc(size_t count, size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     uint64_t audio = audio_alloc_begin();
     void *result = calloc(count, size);
+    while (!result && count && size && count <= SIZE_MAX / size && gangstar_memory_relieve(count * size))
+        result = calloc(count, size);
     audio_alloc_end(audio);
     if (!result && count && size)
         gangstar_allocation_failed("calloc", count <= SIZE_MAX / size ? count * size : SIZE_MAX, caller);
@@ -549,7 +555,17 @@ static void *gangstar_calloc(size_t count, size_t size) {
 static void *gangstar_realloc(void *ptr, size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     uint64_t audio = audio_alloc_begin();
+    if (gangstar_lightmap_pool_owns(ptr)) {
+        // Only whole-chain buffers live in the pool; any resize leaves it.
+        void *moved = size ? malloc(size) : NULL;
+        if (moved) memcpy(moved, ptr, size < RIO_LIGHTMAP_SLOT_BYTES ? size : RIO_LIGHTMAP_SLOT_BYTES);
+        if (moved || !size) { rio_heap_freed(ptr); gangstar_lightmap_pool_put(ptr); }
+        if (moved) rio_heap_allocated(moved, size, caller);
+        audio_alloc_end(audio);
+        return moved;
+    }
     void *result = realloc(ptr, size);
+    while (!result && size && gangstar_memory_relieve(size)) result = realloc(ptr, size);
     audio_alloc_end(audio);
     if (!result && size) gangstar_allocation_failed("realloc", size, caller);
     if (result || !size) rio_heap_reallocated(ptr, result, size, caller);
@@ -557,14 +573,22 @@ static void *gangstar_realloc(void *ptr, size_t size) {
 }
 static void gangstar_free(void *ptr) {
     rio_heap_freed(ptr);
+    if (gangstar_lightmap_pool_put(ptr)) return;
     uint64_t audio = audio_alloc_begin();
     free(ptr);
     audio_alloc_end(audio);
 }
+// operator new retries after each call; without a handler it throws.
+extern void *_ZSt15set_new_handlerPFvvE(void (*)(void));
+static void gangstar_new_relief(void) {
+    if (!gangstar_memory_relieve(0)) _ZSt15set_new_handlerPFvvE(NULL);
+}
+void gangstar_install_new_relief(void) { _ZSt15set_new_handlerPFvvE(gangstar_new_relief); }
 static void *gangstar_new(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     uint64_t audio = audio_alloc_begin();
-    void *result = ((void *(*)(size_t))_Znwj)(size);
+    void *result = gangstar_lightmap_pool_get(size);
+    if (!result) result = ((void *(*)(size_t))_Znwj)(size);
     audio_alloc_end(audio);
     if (result) rio_heap_allocated(result, size, caller);
     return result;
@@ -572,19 +596,22 @@ static void *gangstar_new(size_t size) {
 static void *gangstar_new_array(size_t size) {
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     uint64_t audio = audio_alloc_begin();
-    void *result = ((void *(*)(size_t))_Znaj)(size);
+    void *result = gangstar_lightmap_pool_get(size);
+    if (!result) result = ((void *(*)(size_t))_Znaj)(size);
     audio_alloc_end(audio);
     if (result) rio_heap_allocated(result, size, caller);
     return result;
 }
 static void gangstar_delete(void *ptr) {
     rio_heap_freed(ptr);
+    if (gangstar_lightmap_pool_put(ptr)) return;
     uint64_t audio = audio_alloc_begin();
     ((void (*)(void *))_ZdlPv)(ptr);
     audio_alloc_end(audio);
 }
 static void gangstar_delete_array(void *ptr) {
     rio_heap_freed(ptr);
+    if (gangstar_lightmap_pool_put(ptr)) return;
     uint64_t audio = audio_alloc_begin();
     ((void (*)(void *))_ZdaPv)(ptr);
     audio_alloc_end(audio);

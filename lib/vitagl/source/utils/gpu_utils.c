@@ -26,6 +26,7 @@
 #include "texture_swizzler.h"
 #include "etc1_mip_reserve.h"
 #include "compressed_mip_layout.h"
+#include "etc1_base_fallback.h"
 #ifdef VGL_UPLOAD_STAGES
 extern void gangstar_texture_alloc_failure(const void *,int,unsigned,unsigned,size_t) __attribute__((weak));
 extern int gangstar_texture_fault_inject(const void *,int,unsigned,unsigned) __attribute__((weak));
@@ -173,26 +174,44 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
 }
 #endif
 
+// Port hook: drops optional caches held in the newlib heap, 0 when none are left
+extern size_t gangstar_memory_relieve(size_t) __attribute__((weak));
+// Port hook: texture block reserved at startup, NULL when none is left
+extern void *gangstar_spill_get(size_t, size_t) __attribute__((weak));
+
 static int unsafe_allocator_counter = 0;
+static inline void gpu_force_gc(void) {
+#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
+	// The GPU is idle here. Only already closed frames are released: rotating
+	// the purge lists instead would reach the frame being recorded as soon as
+	// a second allocation fails in it, freeing memory its scene still uses.
+	gc_drain_retired();
+#else
+	sceKernelWaitSema(gc_mutex[1], 1, NULL);
+	sceKernelSignalSema(gc_mutex[0], 1);
+	sceKernelDelayThread(1000000);
+#endif
+}
+
+#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
+#define FORCED_GC_CYCLES 1 // A single drain releases everything releasable
+#else
+#define FORCED_GC_CYCLES FRAME_PURGE_FREQ
+#endif
+
 void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
 	// Performing a garbage collection cycle prior to attempting to allocate the memory again
 	unsafe_allocator_counter++;
 	if (unsafe_allocator_counter == 1) {
 		glFinish();
 	}
-#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
-	garbage_collector(0, NULL);
-#else
-	sceKernelWaitSema(gc_mutex[1], 1, NULL);
-	sceKernelSignalSema(gc_mutex[0], 1);
-	sceKernelDelayThread(1000000);
-#endif
+	gpu_force_gc();
 
 	// Allocating requested memblock
 	void *res = gpu_alloc_mapped_aligned_for_cpu_inner(alignment, size);
 
 	// Iterating for as many as possible max pending garbage collector cycles
-	if (!res && unsafe_allocator_counter < FRAME_PURGE_FREQ) {
+	if (!res && unsafe_allocator_counter < FORCED_GC_CYCLES) {
 		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
 	}
 
@@ -206,19 +225,13 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
 		// Ideally we'd want glFinish here, but this would cause a circular dependency if the allocation failing is related to a depthstencil surface allocation
 		sceGxmFinish(gxm_context);
 	}
-#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
-	garbage_collector(0, NULL);
-#else
-	sceKernelWaitSema(gc_mutex[1], 1, NULL);
-	sceKernelSignalSema(gc_mutex[0], 1);
-	sceKernelDelayThread(1000000);
-#endif
+	gpu_force_gc();
 
 	// Allocating requested memblock
 	void *res = gpu_alloc_mapped_aligned_for_gpu_inner(alignment, size);
 
 	// Iterating for as many as possible max pending garbage collector cycles
-	if (!res && unsafe_allocator_counter < FRAME_PURGE_FREQ) {
+	if (!res && unsafe_allocator_counter < FORCED_GC_CYCLES) {
 		res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
 	}
 
@@ -229,7 +242,14 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
 	void *res = gpu_alloc_mapped_aligned_for_cpu_inner(alignment, size);
 	if (res)
 		return res;
-	
+
+	// Optional caches go first: cheaper than waiting for the GPU
+	while (use_extra_mem && gangstar_memory_relieve && gangstar_memory_relieve(size)) {
+		res = vgl_memalign(alignment, size, VGL_MEM_EXTERNAL);
+		if (res)
+			return res;
+	}
+
 #ifdef HAVE_TEX_CACHE
 	if (vgl_cache_old_textures(size) >= size) {
 		return gpu_alloc_mapped_aligned_for_cpu(alignment, size);
@@ -258,7 +278,14 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
 	void *res = gpu_alloc_mapped_aligned_for_gpu_inner(alignment, size);
 	if (res)
 		return res;
-	
+
+	// Optional caches go first: cheaper than waiting for the GPU
+	while (use_extra_mem && gangstar_memory_relieve && gangstar_memory_relieve(size)) {
+		res = vgl_memalign(alignment, size, VGL_MEM_EXTERNAL);
+		if (res)
+			return res;
+	}
+
 #ifdef HAVE_TEX_CACHE
 	if (vgl_cache_old_textures(size) >= size) {
 		return gpu_alloc_mapped_aligned_for_gpu(alignment, size);
@@ -271,6 +298,8 @@ void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
 #endif
 	unsafe_allocator_counter = 0;
 	res = gpu_alloc_mapped_aligned_unsafe_for_gpu(alignment, size);
+	if (!res && use_extra_mem && gangstar_spill_get)
+		res = gangstar_spill_get(alignment, size);
 
 #ifdef LOG_ERRORS
 	if (!res) {
@@ -714,6 +743,16 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 	if (!image_size)
 		image_size = gpu_get_compressed_mip_size(mip_level, w, h, format);
 
+#ifdef VGL_ETC1_OOM_FALLBACK
+	if (profile_etc && !uncompressed) {
+		const int mapped = vgl_etc1_base_map(&tex->etc1_base, &mip_level, w, h);
+		if (mapped == VGL_ETC1_IGNORE)
+			return;
+		if (mapped == VGL_ETC1_REJECT) {
+			SET_GL_ERROR(GL_INVALID_VALUE)
+		}
+	}
+#endif
 	const uint32_t aligned_width = nearest_po2(w);
 	const uint32_t aligned_height = nearest_po2(h);
 	uint32_t max_width, max_height, aligned_max_width, aligned_max_height;
@@ -862,6 +901,9 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
             if (gangstar_texture_alloc_failure)
                 gangstar_texture_alloc_failure(tex,mip_level,w,h,tex_size);
 #endif
+#ifdef VGL_ETC1_OOM_FALLBACK
+            if (profile_etc && !uncompressed && vgl_etc1_base_drop(&tex->etc1_base,w,h)) return;
+#endif
             SET_GL_ERROR(GL_OUT_OF_MEMORY)
         }
 		if (texture_data && tex->status == TEX_VALID)
@@ -949,6 +991,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 		tex->mip_count = mip_count + 1;
 #ifdef VGL_ETC1_OOM_FALLBACK
         if (!mip_level) tex->compressed_mip_failed=0;
+        if (!mip_level) tex->etc1_base.pending=0;
 #endif
 		vglInitSwizzledTexture(&tex->gxm_tex, texture_data, format, tex_width, tex_height, tex->use_mips ? tex->mip_count : 0);
 		tex->palette_data = NULL;

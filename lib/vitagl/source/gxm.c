@@ -356,6 +356,24 @@ int garbage_collector(unsigned int args, void *arg) {
 #endif
 }
 
+#if defined(HAVE_SINGLE_THREADED_GC) && !defined(HAVE_PTHREAD)
+void gc_drain_retired(void) {
+	sceGxmTransferFinish();
+	for (int f = 0; f < FRAME_PURGE_FREQ; f++) {
+		if (f == frame_purge_idx)
+			continue;
+		vgl_retire_queue_collect(frame_purge_list[f], frame_purge_counts[f], vgl_free);
+		frame_purge_counts[f] = 0;
+		for (int i = 0; i < FRAME_PURGE_RENDERTARGETS_LIST_SIZE; i++) {
+			if (frame_rt_purge_list[f][i]) {
+				sceGxmDestroyRenderTarget(frame_rt_purge_list[f][i]);
+				frame_rt_purge_list[f][i] = NULL;
+			}
+		}
+	}
+}
+#endif
+
 GLboolean start_shader_compiler(void) {
 	shark_set_allocators(vglMalloc, vglFree);
 	is_shark_online = shark_init(NULL) >= 0;
