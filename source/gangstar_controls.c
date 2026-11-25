@@ -31,6 +31,7 @@ static unsigned triangle_action=2;
 static uint32_t triangle_weapon;
 static void (*raise_event)(void *, const void *);
 static void (*move_camera)(void *, int, int);
+static void (*reset_camera_touch)(void *);
 static void **application, **player_instance;
 static int (*player_fallen)(void *);
 static uint32_t stick_move_vtable, stick_release_vtable, steer_vtable;
@@ -104,6 +105,15 @@ static void send_walk(float x, float y, int release) {
 static void send_steering(float x) {
     SteeringEvent event = {steer_vtable, 9, x > 0, {0}, fabsf(x)};
     raise_event(event_instance(), &event);
+}
+// powerA_MoveCamera, even with zero movement, marks the HUD screen as dragged
+// (+0x6a). Only touch release or a camera mode change clears it, and
+// VehicleCamera stays in manual mode while it is set. Clear it after a neutral
+// so the car camera follows automatically, as after a touch release.
+static void neutral_camera(unsigned char *hud, int mode) {
+    move_camera(*application, 0, 0);
+    if (mode == 2 && hud && *(void **)(hud + 0xbc))
+        reset_camera_touch(*(void **)(hud + 0xbc));
 }
 static void send_pedal(int accelerator, int down) {
     // EvUpDownStickMove (11): true calls Character::accelerate, false brake.
@@ -220,6 +230,7 @@ void gangstar_controls_init(void) {
     event_instance = (void *)required("_ZN12EventManager11getInstanceEv");
     raise_event = (void *)required("_ZN12EventManager5raiseERK6IEvent");
     move_camera = (void *)required("_ZN11Application17powerA_MoveCameraEii");
+    reset_camera_touch = (void *)required("_ZN9HudScreen10resetTouchEv");
     application = (void *)required("_ZN11Application13s_applicationE");
     stick_move_vtable = required("_ZTV11EvStickMove") + 8;
     stick_release_vtable = required("_ZTV15EvStickReleased") + 8;
@@ -333,7 +344,7 @@ void gangstar_controls_poll(void) {
         walking = steering = 0;
         camera_remainder[0] = camera_remainder[1] = 0;
         if (RIO_RIGHT_STICK_CAMERA && (camera_active || mode) && game_loaded() && *application)
-            move_camera(*application, 0, 0);
+            neutral_camera(hud, mode);
         camera_active = 0;
         l_info("Gangstar analog input: %s", mode == 3 ? "flying" : mode == 2 ? "driving" : mode == 1 ? "on foot/other HUD" : "inactive");
         last_mode = mode;
@@ -371,7 +382,13 @@ void gangstar_controls_poll(void) {
     if (RIO_RIGHT_STICK_CAMERA) {
     int dx = gangstar_camera_delta(sticks[1][0], seconds, &camera_remainder[0]);
     int dy = gangstar_camera_delta(sticks[1][1], seconds, &camera_remainder[1]);
-    if (gangstar_camera_should_send(dx, dy, &camera_active) && *application)
-        move_camera(*application, dx, dy);
+    if (gangstar_camera_should_send(dx, dy, &camera_active) && *application) {
+        // Clearing on a zero frame of a slow drag is safe: the car camera
+        // stays manual for two seconds and the next unit renews it.
+        if (!dx && !dy)
+            neutral_camera(hud, mode);
+        else
+            move_camera(*application, dx, dy);
+    }
     }
 }
