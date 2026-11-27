@@ -56,6 +56,8 @@ python3 tools/test_gangstar_etc_fallback.py
 cc -std=gnu11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -I source -I lib/vitagl/source/utils -I tools/test_mocks tools/test_gangstar_memory_relief.c -o work/tests/gangstar_memory_relief
 work/tests/gangstar_memory_relief
 cc -std=gnu11 -O1 -g -fsanitize=address,undefined -pthread -Wall -Wextra -Werror -I source -I tools/test_mocks tools/test_gangstar_lightmap_pool.c -o work/tests/gangstar_lightmap_pool
+cc -std=gnu11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -I source -I tools/test_mocks tools/test_gangstar_spawn_gc.c -o work/tests/gangstar_spawn_gc
+work/tests/gangstar_spawn_gc
 work/tests/gangstar_lightmap_pool
 cc -std=gnu11 -O1 -g -fsanitize=address,undefined -pthread -Wall -Wextra -Werror -I source -I tools/test_mocks tools/test_gangstar_spill_pool.c -o work/tests/gangstar_spill_pool
 work/tests/gangstar_spill_pool

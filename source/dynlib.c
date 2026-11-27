@@ -24,6 +24,7 @@
 #include "gangstar_heap_usage.h"
 #include "gangstar_memory_relief.h"
 #include "gangstar_lightmap_pool.h"
+#include "gangstar_spawn_gc.h"
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <stdlib.h>
@@ -572,6 +573,7 @@ static void *gangstar_realloc(void *ptr, size_t size) {
     return result;
 }
 static void gangstar_free(void *ptr) {
+    gangstar_spawn_gc_forget(ptr);
     rio_heap_freed(ptr);
     if (gangstar_lightmap_pool_put(ptr)) return;
     uint64_t audio = audio_alloc_begin();
@@ -603,6 +605,7 @@ static void *gangstar_new_array(size_t size) {
     return result;
 }
 static void gangstar_delete(void *ptr) {
+    gangstar_spawn_gc_forget(ptr);
     rio_heap_freed(ptr);
     if (gangstar_lightmap_pool_put(ptr)) return;
     uint64_t audio = audio_alloc_begin();

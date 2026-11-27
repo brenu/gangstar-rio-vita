@@ -391,6 +391,7 @@ set(SOURCES
     source/gangstar_texture_hot.c
     source/gangstar_memory_relief.c
     source/gangstar_lightmap_pool.c
+    source/gangstar_spawn_gc.c
     source/gangstar_spill_pool.c
     source/gangstar_asset_perf.c
     source/gangstar_wait_perf.c

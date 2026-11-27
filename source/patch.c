@@ -37,6 +37,7 @@ extern "C"
 #include "gangstar_controls.h"
 #include "gangstar_iap_offline.h"
 #include "gangstar_device_model.h"
+#include "gangstar_spawn_gc.h"
 #ifdef GANGSTAR_VITA_PERF_PROFILE
 void gangstar_vita_profile_apply(unsigned char *profile);
 #endif
@@ -452,6 +453,49 @@ static void gangstar_tracking_save_guard(void) {
 }
 #endif
 
+// The Vita buttons reach the game as Android key events, which glf turns into
+// keyboard events, and EventManager::updateEvents forwards every keyboard
+// release to the developer DebugConsole. Its profiles hold raw object pointers
+// and cheat keys: DP_Driving is toggled on with each vehicle control handler,
+// can stay on after its vehicle is destroyed, and the next button release read
+// through the freed vehicle (core dump 1795751956, ELF 5272d0). Android phones
+// without a keyboard never sent these events during play.
+static void gangstar_skip_debug_keys(void *console, const void *event) { (void)console; (void)event; }
+static void gangstar_debug_console_guard(void) {
+    uintptr_t keys = so_symbol(&so_mod, "_ZN12DebugConsole15onKeyboardEventERKN3glf13KeyboardEventE");
+    static const uint32_t expected[] = {0xe92d41f0, 0xe1a05001, 0xe5911014};
+    if (!keys || memcmp((void *)keys, expected, sizeof(expected))) {
+        l_warn("Gangstar: debug console key handler not recognised; left enabled");
+        return;
+    }
+    hook_addr(keys, (uintptr_t)gangstar_skip_debug_keys);
+    l_info("Gangstar: debug console keys disabled");
+}
+
+static int gangstar_spawn_gc_vtable(const void *vtable) {
+    uintptr_t address = (uintptr_t)vtable;
+    if (address & 3) return 0;
+    for (int i = 0; i < so_mod.n_data; ++i)
+        if (address >= so_mod.data_base[i] && address - so_mod.data_base[i] < so_mod.data_size[i]) return 1;
+    return 0;
+}
+static void gangstar_spawn_gc_update(void *manager, int elapsed) {
+    (void)manager; (void)elapsed;
+    gangstar_spawn_gc_collect(gangstar_spawn_gc_queue, gangstar_spawn_gc_vtable);
+}
+static void gangstar_spawn_gc_guard(void) {
+    uintptr_t collect = so_symbol(&so_mod, "_ZN8SpawnMgr22UpdateGarbageCollectorEi");
+    GangstarObjectVector *queue = (void *)so_symbol(&so_mod, "gToDelete");
+    static const uint32_t expected[] = {0xe92d4070, 0xe59f404c, 0xe59f504c, 0xe08f4004};
+    if (!collect || !queue || memcmp((void *)collect, expected, sizeof(expected))) {
+        l_warn("Gangstar: spawn garbage collector layout not recognised; left unguarded");
+        return;
+    }
+    gangstar_spawn_gc_queue = queue;
+    hook_addr(collect, (uintptr_t)gangstar_spawn_gc_update);
+    l_info("Gangstar: spawn garbage collector guarded");
+}
+
 void so_patch(void) {
 	so_patch_module(&so_mod);
 	uintptr_t console = so_symbol(&so_mod, "_ZN3glf7Console8PrintRawEPKc");
@@ -464,6 +508,8 @@ void so_patch(void) {
     gangstar_mission_intro_guard();
     gangstar_fps_camera_guard();
     gangstar_review_popup_guard();
+    gangstar_spawn_gc_guard();
+    gangstar_debug_console_guard();
     gangstar_iap_offline_install();
 #ifdef GANGSTAR_HIDE_TOUCH_BUTTONS
 	gangstar_hide_touch_buttons();
